@@ -101,6 +101,7 @@ struct GeneralSettingsView: View {
     @StateObject private var githubCache = GitHubMetadataCache.shared
     @ObservedObject private var updateManager = UpdateManager.shared
     private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
+    private let forkRepoURL = URL(string: "https://github.com/grahac/freeflow")!
 
     var body: some View {
         ScrollView {
@@ -121,6 +122,7 @@ struct GeneralSettingsView: View {
 
                     // GitHub card
                     VStack(spacing: 10) {
+                        // Fork repo row (ours)
                         HStack(spacing: 8) {
                             AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
                                 switch phase {
@@ -133,14 +135,83 @@ struct GeneralSettingsView: View {
                             .frame(width: 22, height: 22)
                             .clipShape(Circle())
 
+                            VStack(alignment: .leading, spacing: 2) {
+                                Button {
+                                    openURL(forkRepoURL)
+                                } label: {
+                                    Text("grahac/freeflow")
+                                        .font(.system(.caption, design: .monospaced).weight(.medium))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.blue)
+
+                                Text("Privacy fork · no screenshots")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            HStack(spacing: 4) {
+                                Image(systemName: "star.fill")
+                                    .foregroundStyle(.yellow)
+                                    .font(.caption2)
+                                if githubCache.isLoading {
+                                    ProgressView().scaleEffect(0.5)
+                                } else if let count = githubCache.forkStarCount {
+                                    Text("\(count.formatted())")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.yellow.opacity(0.14)))
+
                             Button {
-                                openURL(freeflowRepoURL)
+                                openURL(forkRepoURL)
                             } label: {
-                                Text("zachlatta/freeflow")
-                                    .font(.system(.caption, design: .monospaced).weight(.medium))
+                                HStack(spacing: 4) {
+                                    Image(systemName: "star")
+                                    Text("Star")
+                                }
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Capsule().fill(Color.yellow.opacity(0.18)))
                             }
                             .buttonStyle(.plain)
-                            .foregroundStyle(.blue)
+                        }
+
+                        Divider()
+
+                        // Upstream repo row (Zach's)
+                        HStack(spacing: 8) {
+                            AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image.resizable().aspectRatio(contentMode: .fill)
+                                default:
+                                    Color.gray.opacity(0.2)
+                                }
+                            }
+                            .frame(width: 22, height: 22)
+                            .clipShape(Circle())
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Button {
+                                    openURL(freeflowRepoURL)
+                                } label: {
+                                    Text("zachlatta/freeflow")
+                                        .font(.system(.caption, design: .monospaced).weight(.medium))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.blue)
+
+                                Text("Original upstream")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
 
                             Spacer()
 
@@ -151,7 +222,7 @@ struct GeneralSettingsView: View {
                                 if githubCache.isLoading {
                                     ProgressView().scaleEffect(0.5)
                                 } else if let count = githubCache.starCount {
-                                    Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
+                                    Text("\(count.formatted())")
                                         .font(.caption2.weight(.semibold))
                                         .foregroundStyle(.secondary)
                                 }
@@ -199,7 +270,7 @@ struct GeneralSettingsView: View {
                                     }
                                 }
                                 .clipped()
-                                Text("recently starred")
+                                Text("recently starred zachlatta/freeflow")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                                     .fixedSize()
@@ -585,14 +656,23 @@ struct GeneralSettingsView: View {
                 }
             )
 
-            permissionRow(
-                title: "Screen Recording",
-                icon: "camera.viewfinder",
-                granted: appState.hasScreenRecordingPermission,
-                action: {
-                    appState.requestScreenCapturePermission()
-                }
-            )
+            Divider()
+
+            Toggle("Capture screenshots for context", isOn: $appState.screenshotEnabled)
+            Text("When enabled, FreeFlow captures a screenshot of the active window to improve transcription accuracy. Disable to keep your screen contents private.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if appState.screenshotEnabled {
+                permissionRow(
+                    title: "Screen Recording",
+                    icon: "camera.viewfinder",
+                    granted: appState.hasScreenRecordingPermission,
+                    action: {
+                        appState.requestScreenCapturePermission()
+                    }
+                )
+            }
         }
     }
 

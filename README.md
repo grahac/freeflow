@@ -9,9 +9,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
+  <a href="https://github.com/grahac/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
   <sub>Works on all Macs (Apple Silicon + Intel)</sub>
 </p>
+
+---
+
+> **This is a privacy fork of [FreeFlow](https://github.com/zachlatta/freeflow) by [Zach Latta](https://github.com/zachlatta).** The only change is that screen recording (used for context-aware transcription) is no longer required — the app works fully without it. We are very thankful to Zach for building FreeFlow and will do our best to keep this fork up to date with upstream.</p>
+
+> If you want the full context-aware experience, check out the [original](https://github.com/zachlatta/freeflow).
 
 ---
 

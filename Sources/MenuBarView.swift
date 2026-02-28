@@ -18,23 +18,6 @@ struct MenuBarView: View {
 
             Divider()
 
-            if !appState.hasScreenRecordingPermission {
-                Button {
-                    appState.requestScreenCapturePermission()
-                } label: {
-                    Label("Screen Recording Permission Needed", systemImage: "camera.viewfinder")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(Color.orange)
-
-                Divider()
-            }
-
             // Accessibility warning
             if !appState.hasAccessibility {
                 Button {

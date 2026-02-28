@@ -443,7 +443,7 @@ final class UpdateManager: ObservableObject {
     nonisolated private func mountDMG(at path: URL) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = ["attach", path.path, "-nobrowse", "-noverify", "-noautoopen", "-plist"]
+        process.arguments = ["attach", path.path, "-nobrowse", "-noautoopen", "-plist"]
 
         let pipe = Pipe()
         process.standardOutput = pipe

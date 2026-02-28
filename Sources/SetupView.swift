@@ -9,12 +9,12 @@ struct SetupView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
     private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
+    private let forkRepoURL = URL(string: "https://github.com/grahac/freeflow")!
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
         case apiKey
         case micPermission
         case accessibility
-        case screenRecording
         case hotkey
         case vocabulary
         case launchAtLogin
@@ -29,7 +29,6 @@ struct SetupView: View {
     @State private var isValidatingKey = false
     @State private var keyValidationError: String?
     @State private var accessibilityTimer: Timer?
-    @State private var screenRecordingTimer: Timer?
     @State private var customVocabularyInput: String = ""
     @StateObject private var githubCache = GitHubMetadataCache.shared
 
@@ -59,8 +58,6 @@ struct SetupView: View {
                     micPermissionStep
                 case .accessibility:
                     accessibilityStep
-                case .screenRecording:
-                    screenRecordingStep
                 case .hotkey:
                     hotkeyStep
                 case .vocabulary:
@@ -150,22 +147,21 @@ struct SetupView: View {
         }
         .onDisappear {
             accessibilityTimer?.invalidate()
-            screenRecordingTimer?.invalidate()
         }
     }
 
     // MARK: - Steps
 
     var welcomeStep: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 10) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 128, height: 128)
+                .frame(width: 90, height: 90)
 
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 Text("Welcome to FreeFlow")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
 
                 Text("Dictate text anywhere on your Mac.\nHold a key to record, release to transcribe.")
                     .multilineTextAlignment(.center)
@@ -173,7 +169,77 @@ struct SetupView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
+                // Fork row (ours)
+                HStack(spacing: 8) {
+                    AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/16552370?s=48&v=4")) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().aspectRatio(contentMode: .fill)
+                        default:
+                            Color.gray.opacity(0.2)
+                        }
+                    }
+                    .frame(width: 26, height: 26)
+                    .clipShape(Circle())
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Button {
+                            openURL(forkRepoURL)
+                        } label: {
+                            Text("grahac/freeflow")
+                                .font(.system(.caption, design: .monospaced).weight(.medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.blue)
+                        Text("Privacy fork · no screenshots")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 4) {
+                        Image(systemName: "star.fill")
+                            .foregroundStyle(.yellow)
+                            .font(.caption2)
+                        if githubCache.isLoading {
+                            ProgressView().scaleEffect(0.5)
+                        } else if let count = githubCache.forkStarCount {
+                            Text("\(count.formatted())")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.yellow.opacity(0.14)))
+
+                    Button {
+                        openURL(forkRepoURL)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "star")
+                            Text("Star")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.yellow.opacity(0.18)))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack {
+                    VStack { Divider() }
+                    Text("A privacy-based fork (no screenshots) of")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
+                    VStack { Divider() }
+                }
+
+                // Upstream row (Zach's)
                 HStack(spacing: 8) {
                     AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
                         switch phase {
@@ -186,14 +252,19 @@ struct SetupView: View {
                     .frame(width: 26, height: 26)
                     .clipShape(Circle())
 
-                    Button {
-                        openURL(freeflowRepoURL)
-                    } label: {
-                        Text("zachlatta/freeflow")
-                            .font(.system(.caption, design: .monospaced).weight(.medium))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Button {
+                            openURL(freeflowRepoURL)
+                        } label: {
+                            Text("zachlatta/freeflow")
+                                .font(.system(.caption, design: .monospaced).weight(.medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.blue)
+                        Text("Original upstream")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.blue)
 
                     Spacer()
 
@@ -204,7 +275,7 @@ struct SetupView: View {
                         if githubCache.isLoading {
                             ProgressView().scaleEffect(0.5)
                         } else if let count = githubCache.starCount {
-                            Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
+                            Text("\(count.formatted())")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
@@ -228,38 +299,6 @@ struct SetupView: View {
                     .buttonStyle(.plain)
                 }
 
-                if !githubCache.recentStargazers.isEmpty {
-                    Divider()
-                    HStack(spacing: 8) {
-                        HStack(spacing: -6) {
-                            ForEach(githubCache.recentStargazers) { star in
-                                Button {
-                                    openURL(star.user.htmlUrl)
-                                } label: {
-                                    AsyncImage(url: star.user.avatarThumbnailUrl) { phase in
-                                        switch phase {
-                                        case .success(let image):
-                                            image.resizable().aspectRatio(contentMode: .fill)
-                                        default:
-                                            Color.gray.opacity(0.2)
-                                        }
-                                    }
-                                    .frame(width: 22, height: 22)
-                                    .clipShape(Circle())
-                                    .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .clipped()
-                        Text("recently starred")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize()
-                        Spacer()
-                    }
-                    .clipped()
-                }
             }
             .padding(12)
             .background(
@@ -420,58 +459,6 @@ struct SetupView: View {
         }
         .onDisappear {
             accessibilityTimer?.invalidate()
-        }
-    }
-
-    var screenRecordingStep: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "camera.viewfinder")
-                .font(.system(size: 60))
-                .foregroundStyle(.blue)
-
-            Text("Screen Recording")
-                .font(.title)
-                .fontWeight(.bold)
-
-            Text("FreeFlow intelligently adapts the transcription to the current app you're working in (ex. spelling names in an email correctly).")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("It needs this permission to see which app you're working in and any in-progress work. Nothing is stored on FreeFlow's servers (FreeFlow doesn't have servers).")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Image(systemName: "camera.viewfinder")
-                    .frame(width: 24)
-                    .foregroundStyle(.blue)
-                Text("Screen Recording")
-                Spacer()
-                if appState.hasScreenRecordingPermission {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Granted")
-                        .foregroundStyle(.green)
-                } else {
-                    Button("Grant Access") {
-                        appState.requestScreenCapturePermission()
-                    }
-                }
-            }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .cornerRadius(8)
-
-            stepIndicator
-        }
-        .onAppear {
-            startScreenRecordingPolling()
-        }
-        .onDisappear {
-            screenRecordingTimer?.invalidate()
         }
     }
 
@@ -761,8 +748,6 @@ struct SetupView: View {
             return micPermissionGranted
         case .accessibility:
             return accessibilityGranted
-        case .screenRecording:
-            return appState.hasScreenRecordingPermission
         case .testTranscription:
             return testPhase == .done && !testTranscript.isEmpty && testError == nil
         default:
@@ -857,15 +842,6 @@ struct SetupView: View {
     func requestAccessibility() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
-    }
-
-    func startScreenRecordingPolling() {
-        screenRecordingTimer?.invalidate()
-        screenRecordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-            DispatchQueue.main.async {
-                appState.hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
-            }
-        }
     }
 
     // MARK: - Test Transcription
@@ -1018,11 +994,13 @@ class GitHubMetadataCache: ObservableObject {
 
     @Published var starCount: Int?
     @Published var recentStargazers: [GitHubStarRecord] = []
+    @Published var forkStarCount: Int?
     @Published var isLoading = true
 
     private var lastFetchDate: Date?
     private let cacheDuration: TimeInterval = 5 * 60 // 5 minutes
     private let repoAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow")!
+    private let forkAPIURL = URL(string: "https://api.github.com/repos/grahac/freeflow")!
 
     private init() {}
 
@@ -1034,12 +1012,22 @@ class GitHubMetadataCache: ObservableObject {
         isLoading = true
 
         do {
-            let repoResult = try await URLSession.shared.data(from: repoAPIURL)
+            async let upstreamFetch = URLSession.shared.data(from: repoAPIURL)
+            async let forkFetch = URLSession.shared.data(from: forkAPIURL)
+
+            let repoResult = try await upstreamFetch
             guard let repoHTTP = repoResult.1 as? HTTPURLResponse,
                   (200..<300).contains(repoHTTP.statusCode) else {
                 throw URLError(.badServerResponse)
             }
             let count = try JSONDecoder().decode(GitHubRepoInfo.self, from: repoResult.0).stargazersCount
+
+            if let forkResult = try? await forkFetch,
+               let forkHTTP = forkResult.1 as? HTTPURLResponse,
+               (200..<300).contains(forkHTTP.statusCode),
+               let forkInfo = try? JSONDecoder().decode(GitHubRepoInfo.self, from: forkResult.0) {
+                forkStarCount = forkInfo.stargazersCount
+            }
 
             var recent: [GitHubStarRecord] = []
             if count > 0 {

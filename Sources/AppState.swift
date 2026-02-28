@@ -43,6 +43,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let customContextPromptStorageKey = "custom_context_prompt"
     private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
     private let customContextPromptLastModifiedStorageKey = "custom_context_prompt_last_modified"
+    private let screenshotEnabledStorageKey = "screenshot_enabled"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
     let maxPipelineHistoryCount = 20
 
@@ -122,6 +123,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var lastContextScreenshotDataURL: String? = nil
     @Published var lastContextScreenshotStatus = "No screenshot"
     @Published var hasScreenRecordingPermission = false
+    @Published var screenshotEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(screenshotEnabled, forKey: screenshotEnabledStorageKey)
+        }
+    }
     @Published var launchAtLogin: Bool {
         didSet { setLaunchAtLogin(launchAtLogin) }
     }
@@ -143,7 +149,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var contextService: AppContextService
     private var contextCaptureTask: Task<AppContext?, Never>?
     private var capturedContext: AppContext?
-    private var hasShownScreenshotPermissionAlert = false
     private var audioDeviceListenerBlock: AudioObjectPropertyListenerBlock?
     private let pipelineHistoryStore = PipelineHistoryStore()
 
@@ -157,6 +162,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
         let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
         let customContextPromptLastModified = UserDefaults.standard.string(forKey: customContextPromptLastModifiedStorageKey) ?? ""
+        let screenshotEnabled = UserDefaults.standard.object(forKey: "screenshot_enabled") as? Bool ?? true
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
         var removedAudioFileNames: [String] = []
@@ -185,6 +191,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.hasScreenRecordingPermission = initialScreenCapturePermission
+        self.screenshotEnabled = screenshotEnabled
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         self.selectedMicrophoneID = selectedMicrophoneID
 
@@ -475,7 +482,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         isRecording = true
         statusText = "Starting..."
-        hasShownScreenshotPermissionAlert = false
 
         // Show initializing dots only if engine takes longer than 0.5s to start
         var overlayShown = false
@@ -799,7 +805,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         contextCaptureTask = Task { [weak self] in
             guard let self else { return nil }
-            let context = await self.contextService.collectContext()
+            let context = await self.contextService.collectContext(captureScreenshot: self.screenshotEnabled)
             await MainActor.run {
                 self.capturedContext = context
                 self.lastContextSummary = context.contextSummary
@@ -873,53 +879,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func handleScreenshotCaptureIssue(_ message: String?) {
-        guard let message, !message.isEmpty else {
-            hasShownScreenshotPermissionAlert = false
-            return
-        }
-
+        guard let message, !message.isEmpty else { return }
         os_log(.error, "Screenshot capture issue: %{public}@", message)
-
-        if isScreenCapturePermissionError(message) && !hasShownScreenshotPermissionAlert {
-            hasShownScreenshotPermissionAlert = true
-
-            // Permission errors are fatal — stop recording
-            _ = audioRecorder.stopRecording()
-            audioRecorder.cleanup()
-            audioLevelCancellable?.cancel()
-            audioLevelCancellable = nil
-            contextCaptureTask?.cancel()
-            contextCaptureTask = nil
-            capturedContext = nil
-            isRecording = false
-            statusText = "Screenshot Required"
-            overlayManager.dismiss()
-
-            NSSound(named: "Basso")?.play()
-            showScreenshotPermissionAlert(message: message)
-        }
-        // Non-permission errors (transient failures) — continue recording without context
+        // Non-fatal: continue recording without context
     }
 
-    private func isScreenCapturePermissionError(_ message: String) -> Bool {
-        let lowered = message.lowercased()
-        return lowered.contains("permission") || lowered.contains("screen recording")
-    }
-
-    private func showScreenshotPermissionAlert(message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "\(message)\n\nFreeFlow requires Screen Recording permission to capture screenshots for context-aware transcription.\n\nGo to System Settings > Privacy & Security > Screen Recording and enable FreeFlow."
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
-
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            openScreenCaptureSettings()
-        }
-    }
 
     private func showScreenshotCaptureErrorAlert(message: String) {
         let alert = NSAlert()

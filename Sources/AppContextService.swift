@@ -43,7 +43,7 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         self.customContextPrompt = customContextPrompt
     }
 
-    func collectContext() async -> AppContext {
+    func collectContext(captureScreenshot: Bool = true) async -> AppContext {
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
             return AppContext(
                 appName: nil,
@@ -64,11 +64,16 @@ Return only two sentences, no labels, no markdown, no extra commentary.
 
         let windowTitle = focusedWindowTitle(from: appElement) ?? appName
         let selectedText = selectedText(from: appElement)
-        let screenshot = captureActiveWindowScreenshot(
-            processIdentifier: frontmostApp.processIdentifier,
-            appElement: appElement,
-            focusedWindowTitle: windowTitle
-        )
+        let screenshot: (dataURL: String?, mimeType: String?, error: String?)
+        if captureScreenshot {
+            screenshot = captureActiveWindowScreenshot(
+                processIdentifier: frontmostApp.processIdentifier,
+                appElement: appElement,
+                focusedWindowTitle: windowTitle
+            )
+        } else {
+            screenshot = (nil, nil, nil)
+        }
         let currentActivity: String
         let contextPrompt: String?
         if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
