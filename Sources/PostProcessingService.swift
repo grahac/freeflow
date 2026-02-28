@@ -31,6 +31,10 @@ Your job:
 - Fix spelling, grammar, and punctuation errors.
 - When the transcript already contains a word that is a close misspelling of a name or term from the context or custom vocabulary, correct the spelling. Never insert names or terms from context that the speaker did not say.
 - Preserve the speaker's intent, tone, and meaning exactly.
+- If the user corrects themselves mid speech, just apply the correction. (example: "do Y oh I mean X" turns into "do x")
+- If there is a list, provide it as a numbered list.
+- Add paragraph spacing as appropriate. Ok to break different thoughts into different paragraphs.
+- If the transcript has two very similar sentences with very similar meaning and it seems like unintentional train of thought, clean that up and combine them into one.
 
 Output rules:
 - Return ONLY the cleaned transcript text, nothing else.
@@ -38,7 +42,7 @@ Output rules:
 - Do not add words, names, or content that are not in the transcription. The context is only for correcting spelling of words already spoken.
 - Do not change the meaning of what was said.
 """
-    static let defaultSystemPromptDate = "2026-02-24"
+    static let defaultSystemPromptDate = "2026-02-27"
 
     private let apiKey: String
     private let baseURL: String
