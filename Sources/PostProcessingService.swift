@@ -107,8 +107,7 @@ CRITICAL: Your response must contain ONLY the cleaned text. No preamble, no expl
         let normalizedVocabulary = normalizedVocabularyText(customVocabulary)
         let vocabularyPrompt = if !normalizedVocabulary.isEmpty {
             """
-The following vocabulary must be treated as high-priority terms while rewriting.
-Use these spellings exactly in the output when relevant:
+The speaker uses the following terms. ONLY use these to fix the spelling of a word the speaker clearly said. Never substitute a different word with one of these terms:
 \(normalizedVocabulary)
 """
         } else {
