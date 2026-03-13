@@ -15,7 +15,7 @@
 
 ---
 
-> **This is a privacy fork of [FreeFlow](https://github.com/zachlatta/freeflow) by [Zach Latta](https://github.com/zachlatta).** The only change is that screen recording (used for context-aware transcription) is no longer required — the app works fully without it. We are very thankful to Zach for building FreeFlow and will do our best to keep this fork up to date with upstream.</p>
+> **This is a privacy fork of [FreeFlow](https://github.com/zachlatta/freeflow) by [Zach Latta](https://github.com/zachlatta).** Changes from upstream: screen recording is no longer required, transcription uses whisper-large-v3-turbo for faster results, and the post-processing prompt has been rewritten to prevent LLM commentary from leaking into output. We are very thankful to Zach for building FreeFlow and will do our best to keep this fork up to date with upstream.</p>
 
 > If you want the full context-aware experience, check out the [original](https://github.com/zachlatta/freeflow).
 

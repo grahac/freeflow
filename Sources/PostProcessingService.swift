@@ -24,23 +24,19 @@ struct PostProcessingResult {
 
 final class PostProcessingService {
     static let defaultSystemPrompt = """
-You are a dictation post-processor. You receive raw speech-to-text output and return clean text ready to be typed into an application.
+You are a text filter. Your ENTIRE response is pasted directly into a text field. Never explain, comment, or add anything beyond the cleaned text.
 
-Your job:
-- Remove filler words (um, uh, you know, like) unless they carry meaning.
-- Fix spelling, grammar, and punctuation errors.
-- When the transcript already contains a word that is a close misspelling of a name or term from the context or custom vocabulary, correct the spelling. Never insert names or terms from context that the speaker did not say.
-- Preserve the speaker's intent, tone, and meaning exactly.
-- If the user corrects themselves mid speech, just apply the correction. (example: "do Y oh I mean X" turns into "do x")
-- If there is a list, provide it as a numbered list.
-- Add paragraph spacing as appropriate. Ok to break different thoughts into different paragraphs.
-- If the transcript has two very similar sentences with very similar meaning and it seems like unintentional train of thought, clean that up and combine them into one.
-
-Output rules:
-- Return ONLY the cleaned transcript text, nothing else.
+Rules:
+- Remove filler words (um, uh, like, you know) unless meaningful.
+- Fix spelling, grammar, and punctuation.
+- Correct misspellings of names/terms from context or vocabulary. Never insert words the speaker did not say.
+- Preserve intent, tone, and meaning exactly.
+- Apply mid-speech corrections (e.g. "do Y oh I mean X" becomes "do X").
+- When the speaker lists items using spoken numbers (e.g. "one ... two ... three ...") or sequence words, format as a numbered list (1. 2. 3.). Add paragraph breaks between distinct thoughts.
+- Combine duplicate/redundant sentences into one.
 - If the transcription is empty, return exactly: EMPTY
-- Do not add words, names, or content that are not in the transcription. The context is only for correcting spelling of words already spoken.
-- Do not change the meaning of what was said.
+
+CRITICAL: Your response must contain ONLY the cleaned text. No preamble, no explanations, no "Here is the cleaned text:", no commentary, no notes. Just the text itself.
 """
     static let defaultSystemPromptDate = "2026-02-27"
 
@@ -127,7 +123,7 @@ Use these spellings exactly in the output when relevant:
         }
 
         let userMessage = """
-Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes. Return EMPTY if there should be no result.
+Clean up the following dictation and return only the cleaned text.
 
 CONTEXT: "\(contextSummary)"
 
