@@ -302,11 +302,17 @@ struct GeneralSettingsView: View {
                 SettingsCard("API Key", icon: "key.fill") {
                     apiKeySection
                 }
-                SettingsCard("Push-to-Talk Key", icon: "keyboard.fill") {
+                SettingsCard("Dictation Shortcuts", icon: "keyboard.fill") {
                     hotkeySection
+                }
+                SettingsCard("Clipboard", icon: "doc.on.clipboard") {
+                    clipboardSection
                 }
                 SettingsCard("Microphone", icon: "mic.fill") {
                     microphoneSection
+                }
+                SettingsCard("Sound Volume", icon: "speaker.wave.2.fill") {
+                    soundVolumeSection
                 }
                 SettingsCard("Custom Vocabulary", icon: "text.book.closed.fill") {
                     vocabularySection
@@ -525,6 +531,24 @@ struct GeneralSettingsView: View {
                 }
                 .font(.caption)
             }
+
+            Divider()
+
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Force HTTP/2 for Transcription")
+                        .font(.caption.weight(.semibold))
+                    Text("Uses `curl --http2` for audio transcription uploads. Leave this off unless the default transport is failing.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Toggle("", isOn: $appState.forceHTTP2Transcription)
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+            }
         }
     }
 
@@ -549,31 +573,52 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: Push-to-Talk Key
+    // MARK: Dictation Shortcuts
 
     private var hotkeySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Hold this key to record, release to transcribe.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            VStack(spacing: 6) {
-                ForEach(HotkeyOption.allCases) { option in
-                    HotkeyOptionRow(
-                        option: option,
-                        isSelected: appState.selectedHotkey == option,
-                        action: {
-                            appState.selectedHotkey = option
-                        }
-                    )
+        VStack(alignment: .leading, spacing: 12) {
+            DictationShortcutEditor { isCapturing in
+                if isCapturing {
+                    appState.suspendHotkeyMonitoringForShortcutCapture()
+                } else {
+                    appState.resumeHotkeyMonitoringAfterShortcutCapture()
                 }
             }
 
-            if appState.selectedHotkey == .fnKey {
-                Text("Tip: If Fn opens Emoji picker, go to System Settings > Keyboard and change \"Press fn key to\" to \"Do Nothing\".")
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Shortcut Start Delay")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Text("\(appState.shortcutStartDelayMilliseconds) ms")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                Slider(
+                    value: $appState.shortcutStartDelay,
+                    in: 0...0.5,
+                    step: 0.025
+                )
+
+                Text("Applies before recording starts for both hold and tap shortcuts. Stopping still happens immediately.")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // MARK: Clipboard
+
+    private var clipboardSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Preserve clipboard after paste", isOn: $appState.preserveClipboard)
+
+            Text("FreeFlow will temporarily place the transcript on your clipboard to paste it, then restore whatever was there before. If you copy something else before the restore happens, FreeFlow leaves it alone.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -602,6 +647,35 @@ struct GeneralSettingsView: View {
         }
         .onAppear {
             appState.refreshAvailableMicrophones()
+        }
+    }
+
+    // MARK: Sound Volume
+
+    private var soundVolumeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Adjust the volume of feedback sounds.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 12) {
+                Image(systemName: "speaker.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                Slider(value: $appState.soundVolume, in: 0...1, step: 0.1)
+                Image(systemName: "speaker.wave.3.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                Text("\(Int(appState.soundVolume * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, alignment: .trailing)
+            }
+
+            Button("Preview") {
+                let s = NSSound(named: "Tink"); s?.volume = appState.soundVolume; s?.play()
+            }
+            .font(.caption)
         }
     }
 
@@ -1688,4 +1762,3 @@ struct FlowLayout: Layout {
         return (CGSize(width: maxWidth, height: totalHeight), positions)
     }
 }
-

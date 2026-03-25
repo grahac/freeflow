@@ -34,9 +34,77 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
+private struct PreservedPasteboardEntry {
+    let type: NSPasteboard.PasteboardType
+    let value: Value
+
+    enum Value {
+        case string(String)
+        case propertyList(Any)
+        case data(Data)
+    }
+}
+
+private struct PreservedPasteboardItem {
+    let entries: [PreservedPasteboardEntry]
+
+    init(item: NSPasteboardItem) {
+        self.entries = item.types.compactMap { type in
+            if let string = item.string(forType: type) {
+                return PreservedPasteboardEntry(type: type, value: .string(string))
+            }
+            if let propertyList = item.propertyList(forType: type) {
+                return PreservedPasteboardEntry(type: type, value: .propertyList(propertyList))
+            }
+            if let data = item.data(forType: type) {
+                return PreservedPasteboardEntry(type: type, value: .data(data))
+            }
+            return nil
+        }
+    }
+
+    func makePasteboardItem() -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        for entry in entries {
+            switch entry.value {
+            case .string(let string):
+                item.setString(string, forType: entry.type)
+            case .propertyList(let propertyList):
+                item.setPropertyList(propertyList, forType: entry.type)
+            case .data(let data):
+                item.setData(data, forType: entry.type)
+            }
+        }
+        return item
+    }
+}
+
+private struct PreservedPasteboardSnapshot {
+    let items: [PreservedPasteboardItem]
+
+    init(pasteboard: NSPasteboard) {
+        self.items = (pasteboard.pasteboardItems ?? []).map(PreservedPasteboardItem.init)
+    }
+
+    func restore(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        guard !items.isEmpty else { return }
+        _ = pasteboard.writeObjects(items.map { $0.makePasteboardItem() })
+    }
+}
+
+private struct PendingClipboardRestore {
+    let snapshot: PreservedPasteboardSnapshot
+    let expectedChangeCount: Int
+}
+
 final class AppState: ObservableObject, @unchecked Sendable {
     private let apiKeyStorageKey = "groq_api_key"
     private let apiBaseURLStorageKey = "api_base_url"
+    private let holdShortcutStorageKey = "hold_shortcut"
+    private let toggleShortcutStorageKey = "toggle_shortcut"
+    private let savedHoldCustomShortcutStorageKey = "saved_hold_custom_shortcut"
+    private let savedToggleCustomShortcutStorageKey = "saved_toggle_custom_shortcut"
     private let customVocabularyStorageKey = "custom_vocabulary"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
     private let customSystemPromptStorageKey = "custom_system_prompt"
@@ -44,7 +112,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
     private let customContextPromptLastModifiedStorageKey = "custom_context_prompt_last_modified"
     private let screenshotEnabledStorageKey = "screenshot_enabled"
+    private let shortcutStartDelayStorageKey = "shortcut_start_delay"
+    private let preserveClipboardStorageKey = "preserve_clipboard"
+    private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
+    private let soundVolumeStorageKey = "sound_volume"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
+    private let clipboardRestoreDelay: TimeInterval = 0.15
     let maxPipelineHistoryCount = 20
 
     @Published var hasCompletedSetup: Bool {
@@ -67,10 +140,29 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    @Published var selectedHotkey: HotkeyOption {
+    @Published var holdShortcut: ShortcutBinding {
         didSet {
-            UserDefaults.standard.set(selectedHotkey.rawValue, forKey: "hotkey_option")
+            persistShortcut(holdShortcut, key: holdShortcutStorageKey)
             restartHotkeyMonitoring()
+        }
+    }
+
+    @Published var toggleShortcut: ShortcutBinding {
+        didSet {
+            persistShortcut(toggleShortcut, key: toggleShortcutStorageKey)
+            restartHotkeyMonitoring()
+        }
+    }
+
+    @Published private(set) var savedHoldCustomShortcut: ShortcutBinding? {
+        didSet {
+            persistOptionalShortcut(savedHoldCustomShortcut, key: savedHoldCustomShortcutStorageKey)
+        }
+    }
+
+    @Published private(set) var savedToggleCustomShortcut: ShortcutBinding? {
+        didSet {
+            persistOptionalShortcut(savedToggleCustomShortcut, key: savedToggleCustomShortcutStorageKey)
         }
     }
 
@@ -102,6 +194,30 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var customContextPromptLastModified: String {
         didSet {
             UserDefaults.standard.set(customContextPromptLastModified, forKey: customContextPromptLastModifiedStorageKey)
+        }
+    }
+
+    @Published var shortcutStartDelay: TimeInterval {
+        didSet {
+            UserDefaults.standard.set(shortcutStartDelay, forKey: shortcutStartDelayStorageKey)
+        }
+    }
+
+    @Published var preserveClipboard: Bool {
+        didSet {
+            UserDefaults.standard.set(preserveClipboard, forKey: preserveClipboardStorageKey)
+        }
+    }
+
+    @Published var forceHTTP2Transcription: Bool {
+        didSet {
+            UserDefaults.standard.set(forceHTTP2Transcription, forKey: forceHTTP2TranscriptionStorageKey)
+        }
+    }
+
+    @Published var soundVolume: Float {
+        didSet {
+            UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
         }
     }
 
@@ -151,18 +267,38 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var capturedContext: AppContext?
     private var audioDeviceListenerBlock: AudioObjectPropertyListenerBlock?
     private let pipelineHistoryStore = PipelineHistoryStore()
+    private let shortcutSessionController = DictationShortcutSessionController()
+    private var activeRecordingTriggerMode: RecordingTriggerMode?
+    private var pendingShortcutStartTask: Task<Void, Never>?
+    private var pendingShortcutStartMode: RecordingTriggerMode?
+    private var shouldMonitorHotkeys = false
+    private var isCapturingShortcut = false
 
     init() {
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
         let apiKey = Self.loadStoredAPIKey(account: apiKeyStorageKey)
         let apiBaseURL = Self.loadStoredAPIBaseURL(account: "api_base_url")
-        let selectedHotkey = HotkeyOption(rawValue: UserDefaults.standard.string(forKey: "hotkey_option") ?? "fn") ?? .fnKey
+        let shortcuts = Self.loadShortcutConfiguration(
+            holdKey: holdShortcutStorageKey,
+            toggleKey: toggleShortcutStorageKey
+        )
+        let savedHoldCustomShortcut = Self.loadShortcut(forKey: savedHoldCustomShortcutStorageKey)
+            ?? (shortcuts.hold.isCustom ? shortcuts.hold : nil)
+        let savedToggleCustomShortcut = Self.loadShortcut(forKey: savedToggleCustomShortcutStorageKey)
+            ?? (shortcuts.toggle.isCustom ? shortcuts.toggle : nil)
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
         let customSystemPrompt = UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? ""
         let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
         let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
         let customContextPromptLastModified = UserDefaults.standard.string(forKey: customContextPromptLastModifiedStorageKey) ?? ""
         let screenshotEnabled = UserDefaults.standard.object(forKey: "screenshot_enabled") as? Bool ?? true
+        let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
+        let preserveClipboard = UserDefaults.standard.object(forKey: preserveClipboardStorageKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: preserveClipboardStorageKey)
+        let forceHTTP2Transcription = UserDefaults.standard.bool(forKey: forceHTTP2TranscriptionStorageKey)
+        let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
+            ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
         var removedAudioFileNames: [String] = []
@@ -182,12 +318,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.hasCompletedSetup = hasCompletedSetup
         self.apiKey = apiKey
         self.apiBaseURL = apiBaseURL
-        self.selectedHotkey = selectedHotkey
+        self.holdShortcut = shortcuts.hold
+        self.toggleShortcut = shortcuts.toggle
+        self.savedHoldCustomShortcut = savedHoldCustomShortcut
+        self.savedToggleCustomShortcut = savedToggleCustomShortcut
         self.customVocabulary = customVocabulary
         self.customSystemPrompt = customSystemPrompt
         self.customContextPrompt = customContextPrompt
         self.customSystemPromptLastModified = customSystemPromptLastModified
         self.customContextPromptLastModified = customContextPromptLastModified
+        self.shortcutStartDelay = shortcutStartDelay
+        self.preserveClipboard = preserveClipboard
+        self.forceHTTP2Transcription = forceHTTP2Transcription
+        self.soundVolume = soundVolume
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.hasScreenRecordingPermission = initialScreenCapturePermission
@@ -197,6 +340,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         refreshAvailableMicrophones()
         installAudioDeviceListener()
+
+        if shortcuts.didMigrateLegacyValue {
+            persistShortcut(shortcuts.hold, key: holdShortcutStorageKey)
+            persistShortcut(shortcuts.toggle, key: toggleShortcutStorageKey)
+        }
+        persistOptionalShortcut(savedHoldCustomShortcut, key: savedHoldCustomShortcutStorageKey)
+        persistOptionalShortcut(savedToggleCustomShortcut, key: savedToggleCustomShortcutStorageKey)
+
+        overlayManager.onStopButtonPressed = { [weak self] in
+            DispatchQueue.main.async {
+                self?.handleOverlayStopButtonPressed()
+            }
+        }
     }
 
     deinit {
@@ -237,11 +393,38 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private static let defaultAPIBaseURL = "https://api.groq.com/openai/v1"
 
+    private struct StoredShortcutConfiguration {
+        let hold: ShortcutBinding
+        let toggle: ShortcutBinding
+        let didMigrateLegacyValue: Bool
+    }
+
     private static func loadStoredAPIBaseURL(account: String) -> String {
         if let stored = AppSettingsStorage.load(account: account), !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return stored
         }
         return defaultAPIBaseURL
+    }
+
+    private static func loadShortcutConfiguration(holdKey: String, toggleKey: String) -> StoredShortcutConfiguration {
+        if let hold = loadShortcut(forKey: holdKey),
+           let toggle = loadShortcut(forKey: toggleKey) {
+            return StoredShortcutConfiguration(hold: hold, toggle: toggle, didMigrateLegacyValue: false)
+        }
+
+        let legacyPreset = ShortcutPreset(
+            rawValue: UserDefaults.standard.string(forKey: "hotkey_option") ?? ShortcutPreset.fnKey.rawValue
+        ) ?? .fnKey
+        let hold = legacyPreset.binding
+        let toggle = hold.withAddedModifiers(.command)
+        return StoredShortcutConfiguration(hold: hold, toggle: toggle, didMigrateLegacyValue: true)
+    }
+
+    private static func loadShortcut(forKey key: String) -> ShortcutBinding? {
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(ShortcutBinding.self, from: data)
     }
 
     private func persistAPIBaseURL(_ value: String) {
@@ -251,6 +434,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
         } else {
             AppSettingsStorage.save(trimmed, account: apiBaseURLStorageKey)
         }
+    }
+
+    private func persistShortcut(_ binding: ShortcutBinding, key: String) {
+        guard let data = try? JSONEncoder().encode(binding) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    private func persistOptionalShortcut(_ binding: ShortcutBinding?, key: String) {
+        guard let binding else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+        persistShortcut(binding, key: key)
+    }
+
+    struct SavedAudioFile {
+        let fileName: String
+        let fileURL: URL
     }
 
     static func audioStorageDirectory() -> URL {
@@ -263,12 +464,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return audioDir
     }
 
-    static func saveAudioFile(from tempURL: URL) -> String? {
-        let fileName = UUID().uuidString + "." + tempURL.pathExtension
+    static func saveAudioFile(from tempURL: URL) -> SavedAudioFile? {
+        let fileName = UUID().uuidString + ".wav"
         let destURL = audioStorageDirectory().appendingPathComponent(fileName)
         do {
-            try FileManager.default.copyItem(at: tempURL, to: destURL)
-            return fileName
+            try AudioNormalization.writePreferredAudioCopy(from: tempURL, to: destURL)
+            return SavedAudioFile(fileName: fileName, fileURL: destURL)
         } catch {
             return nil
         }
@@ -396,57 +597,201 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
     }
 
+    var usesFnShortcut: Bool {
+        holdShortcut.usesFnKey || toggleShortcut.usesFnKey
+    }
+
+    var hasEnabledHoldShortcut: Bool {
+        !holdShortcut.isDisabled
+    }
+
+    var hasEnabledToggleShortcut: Bool {
+        !toggleShortcut.isDisabled
+    }
+
+    var shortcutStatusText: String {
+        switch (hasEnabledHoldShortcut, hasEnabledToggleShortcut) {
+        case (true, true):
+            return "Hold \(holdShortcut.displayName) or tap \(toggleShortcut.displayName) to dictate"
+        case (true, false):
+            return "Hold \(holdShortcut.displayName) to dictate"
+        case (false, true):
+            return "Tap \(toggleShortcut.displayName) to dictate"
+        case (false, false):
+            return "No dictation shortcut enabled"
+        }
+    }
+
+    var shortcutStartDelayMilliseconds: Int {
+        Int((shortcutStartDelay * 1000).rounded())
+    }
+
+    func savedCustomShortcut(for role: ShortcutRole) -> ShortcutBinding? {
+        switch role {
+        case .hold:
+            return savedHoldCustomShortcut
+        case .toggle:
+            return savedToggleCustomShortcut
+        }
+    }
+
+    @discardableResult
+    func setShortcut(_ binding: ShortcutBinding, for role: ShortcutRole) -> String? {
+        let otherBinding = role == .hold ? toggleShortcut : holdShortcut
+        if binding.isDisabled && otherBinding.isDisabled {
+            return "At least one shortcut must remain enabled."
+        }
+        guard binding != otherBinding else {
+            return "Hold and tap shortcuts must be different."
+        }
+
+        switch role {
+        case .hold:
+            if binding.isCustom {
+                savedHoldCustomShortcut = binding
+            }
+            holdShortcut = binding
+        case .toggle:
+            if binding.isCustom {
+                savedToggleCustomShortcut = binding
+            }
+            toggleShortcut = binding
+        }
+
+        return nil
+    }
+
     func startHotkeyMonitoring() {
-        hotkeyManager.onKeyDown = { [weak self] in
+        shouldMonitorHotkeys = true
+        hotkeyManager.onShortcutEvent = { [weak self] event in
             DispatchQueue.main.async {
-                self?.handleHotkeyDown()
+                self?.handleShortcutEvent(event)
             }
         }
-        hotkeyManager.onKeyUp = { [weak self] in
-            DispatchQueue.main.async {
-                self?.handleHotkeyUp()
-            }
-        }
-        hotkeyManager.start(option: selectedHotkey)
+        restartHotkeyMonitoring()
+    }
+
+    func stopHotkeyMonitoring() {
+        shouldMonitorHotkeys = false
+        hotkeyManager.stop()
+    }
+
+    func suspendHotkeyMonitoringForShortcutCapture() {
+        isCapturingShortcut = true
+        restartHotkeyMonitoring()
+    }
+
+    func resumeHotkeyMonitoringAfterShortcutCapture() {
+        isCapturingShortcut = false
+        restartHotkeyMonitoring()
     }
 
     private func restartHotkeyMonitoring() {
-        hotkeyManager.start(option: selectedHotkey)
+        guard shouldMonitorHotkeys, !isCapturingShortcut else {
+            hotkeyManager.stop()
+            return
+        }
+
+        hotkeyManager.start(configuration: ShortcutConfiguration(hold: holdShortcut, toggle: toggleShortcut))
     }
 
-    private func handleHotkeyDown() {
-        os_log(.info, log: recordingLog, "handleHotkeyDown() fired, isRecording=%{public}d, isTranscribing=%{public}d", isRecording, isTranscribing)
-        guard !isRecording && !isTranscribing else { return }
-        startRecording()
-    }
+    private func handleShortcutEvent(_ event: ShortcutEvent) {
+        guard let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing) else {
+            return
+        }
 
-    private func handleHotkeyUp() {
-        guard isRecording else { return }
-        stopAndTranscribe()
+        switch action {
+        case .start(let mode):
+            os_log(.info, log: recordingLog, "Shortcut start fired for mode %{public}@", mode.rawValue)
+            scheduleShortcutStart(mode: mode)
+        case .stop:
+            cancelPendingShortcutStart()
+            guard isRecording else {
+                shortcutSessionController.reset()
+                activeRecordingTriggerMode = nil
+                return
+            }
+            stopAndTranscribe()
+        case .switchedToToggle:
+            if isRecording {
+                activeRecordingTriggerMode = .toggle
+                overlayManager.setRecordingTriggerMode(.toggle, animated: true)
+            } else if pendingShortcutStartMode != nil {
+                pendingShortcutStartMode = .toggle
+            }
+        }
     }
 
     func toggleRecording() {
         os_log(.info, log: recordingLog, "toggleRecording() called, isRecording=%{public}d", isRecording)
+        cancelPendingShortcutStart()
         if isRecording {
             stopAndTranscribe()
         } else {
-            startRecording()
+            shortcutSessionController.beginManual(mode: .toggle)
+            startRecording(triggerMode: .toggle)
         }
     }
 
-    private func startRecording() {
+    private func handleOverlayStopButtonPressed() {
+        guard isRecording, activeRecordingTriggerMode == .toggle else { return }
+        stopAndTranscribe()
+    }
+
+    private func scheduleShortcutStart(mode: RecordingTriggerMode) {
+        cancelPendingShortcutStart(resetMode: false)
+        pendingShortcutStartMode = mode
+        let delay = shortcutStartDelay
+
+        guard delay > 0 else {
+            pendingShortcutStartMode = nil
+            startRecording(triggerMode: mode)
+            return
+        }
+
+        pendingShortcutStartTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self, let pendingMode = self.pendingShortcutStartMode else { return }
+                self.pendingShortcutStartTask = nil
+                self.pendingShortcutStartMode = nil
+                self.startRecording(triggerMode: pendingMode)
+            }
+        }
+    }
+
+    private func cancelPendingShortcutStart(resetMode: Bool = true) {
+        pendingShortcutStartTask?.cancel()
+        pendingShortcutStartTask = nil
+        if resetMode {
+            pendingShortcutStartMode = nil
+        }
+    }
+
+    private func startRecording(triggerMode: RecordingTriggerMode) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
+        guard !isRecording && !isTranscribing else { return }
+        cancelPendingShortcutStart()
+        activeRecordingTriggerMode = triggerMode
+        overlayManager.setRecordingTriggerMode(triggerMode, animated: false)
         guard hasAccessibility else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
+            activeRecordingTriggerMode = nil
+            shortcutSessionController.reset()
             showAccessibilityAlert()
             return
         }
         os_log(.info, log: recordingLog, "accessibility check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         guard ensureMicrophoneAccess() else { return }
         os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-        beginRecording()
+        beginRecording(triggerMode: triggerMode)
         os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
@@ -459,10 +804,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
                     if granted {
-                        self?.beginRecording()
+                        guard let self, let triggerMode = self.activeRecordingTriggerMode else { return }
+                        self.beginRecording(triggerMode: triggerMode)
                     } else {
                         self?.errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
                         self?.statusText = "No Microphone"
+                        self?.activeRecordingTriggerMode = nil
+                        self?.shortcutSessionController.reset()
                         self?.showMicrophonePermissionAlert()
                     }
                 }
@@ -471,12 +819,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         default:
             errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
             statusText = "No Microphone"
+            activeRecordingTriggerMode = nil
+            shortcutSessionController.reset()
             showMicrophonePermissionAlert()
             return false
         }
     }
 
-    private func beginRecording() {
+    private func beginRecording(triggerMode: RecordingTriggerMode) {
         os_log(.info, log: recordingLog, "beginRecording() entered")
         errorMessage = nil
 
@@ -491,7 +841,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             guard let self, !overlayShown else { return }
             overlayShown = true
             os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
-            self.overlayManager.showInitializing()
+            self.overlayManager.showInitializing(mode: self.activeRecordingTriggerMode ?? triggerMode)
         }
         initTimer.resume()
 
@@ -504,12 +854,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 os_log(.info, log: recordingLog, "first real audio — transitioning to waveform")
                 self.statusText = "Recording..."
                 if overlayShown {
-                    self.overlayManager.transitionToRecording()
+                    self.overlayManager.transitionToRecording(mode: self.activeRecordingTriggerMode ?? triggerMode)
                 } else {
-                    self.overlayManager.showRecording()
+                    self.overlayManager.showRecording(mode: self.activeRecordingTriggerMode ?? triggerMode)
                 }
                 overlayShown = true
-                NSSound(named: "Tink")?.play()
+                let s = NSSound(named: "Tink"); s?.volume = self.soundVolume; s?.play()
             }
         }
 
@@ -532,6 +882,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 DispatchQueue.main.async {
                     initTimer.cancel()
                     self.isRecording = false
+                    self.activeRecordingTriggerMode = nil
+                    self.shortcutSessionController.reset()
                     self.errorMessage = self.formattedRecordingStartError(error)
                     self.statusText = "Error"
                     self.overlayManager.dismiss()
@@ -592,6 +944,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func stopAndTranscribe() {
+        cancelPendingShortcutStart()
+        shortcutSessionController.reset()
+        activeRecordingTriggerMode = nil
         audioLevelCancellable?.cancel()
         audioLevelCancellable = nil
         debugStatusMessage = "Preparing audio"
@@ -612,15 +967,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
             errorMessage = "No audio recorded"
             isRecording = false
             statusText = "Error"
+            overlayManager.dismiss()
             return
         }
-        let savedAudioFileName = Self.saveAudioFile(from: fileURL)
+        let savedAudioFile = Self.saveAudioFile(from: fileURL)
+        let transcriptionFileURL = savedAudioFile?.fileURL ?? fileURL
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
         debugStatusMessage = "Transcribing audio"
         errorMessage = nil
-        NSSound(named: "Pop")?.play()
+        let s = NSSound(named: "Pop"); s?.volume = soundVolume; s?.play()
         overlayManager.slideUpToNotch { }
 
         transcribingIndicatorTask?.cancel()
@@ -636,12 +993,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             } catch {}
         }
 
-        let transcriptionService = TranscriptionService(apiKey: apiKey, baseURL: apiBaseURL)
+        let transcriptionService = TranscriptionService(
+            apiKey: apiKey,
+            baseURL: apiBaseURL,
+            forceHTTP2: forceHTTP2Transcription
+        )
         let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
 
         Task {
             do {
-                async let transcript = transcriptionService.transcribe(fileURL: fileURL)
+                async let transcript = transcriptionService.transcribe(fileURL: transcriptionFileURL)
                 let rawTranscript = try await transcript
                 let appContext: AppContext
                 if let sessionContext {
@@ -689,36 +1050,35 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         postProcessingPrompt: postProcessingPrompt,
                         context: appContext,
                         processingStatus: processingStatus,
-                        audioFileName: savedAudioFileName
+                        audioFileName: savedAudioFile?.fileName
                     )
                     self.transcribingIndicatorTask?.cancel()
                     self.transcribingIndicatorTask = nil
                     self.lastTranscript = trimmedFinalTranscript
                     self.isTranscribing = false
                     self.debugStatusMessage = "Done"
+                    let completionStatusText = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
 
                     if trimmedFinalTranscript.isEmpty {
                         self.statusText = "Nothing to transcribe"
                         self.overlayManager.dismiss()
                     } else {
-                        self.statusText = "Copied to clipboard!"
+                        self.statusText = completionStatusText
                         self.overlayManager.showDone()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                             self.overlayManager.dismiss()
                         }
 
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(trimmedFinalTranscript, forType: .string)
-
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            self.pasteAtCursor()
+                        let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
+                        self.pasteAtCursorWhenShortcutReleased {
+                            self.restoreClipboardIfNeeded(pendingClipboardRestore)
                         }
                     }
 
                     self.audioRecorder.cleanup()
 
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        if self.statusText == "Copied to clipboard!" || self.statusText == "Nothing to transcribe" {
+                        if self.statusText == completionStatusText || self.statusText == "Nothing to transcribe" {
                             self.statusText = "Ready"
                         }
                     }
@@ -754,7 +1114,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         postProcessingPrompt: "",
                         context: resolvedContext,
                         processingStatus: "Error: \(error.localizedDescription)",
-                        audioFileName: savedAudioFileName
+                        audioFileName: savedAudioFile?.fileName
                     )
                 }
             }
@@ -942,5 +1302,41 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
         keyUp?.flags = .maskCommand
         keyUp?.post(tap: .cgSessionEventTap)
+    }
+
+    private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
+        let pasteboard = NSPasteboard.general
+        let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
+
+        pasteboard.clearContents()
+        pasteboard.setString(transcript, forType: .string)
+
+        guard let snapshot else { return nil }
+        return PendingClipboardRestore(snapshot: snapshot, expectedChangeCount: pasteboard.changeCount)
+    }
+
+    private func restoreClipboardIfNeeded(_ pendingRestore: PendingClipboardRestore?) {
+        guard let pendingRestore else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
+            let pasteboard = NSPasteboard.general
+            guard pasteboard.changeCount == pendingRestore.expectedChangeCount else { return }
+            pendingRestore.snapshot.restore(to: pasteboard)
+        }
+    }
+
+    private func pasteAtCursorWhenShortcutReleased(attempt: Int = 0, completion: (() -> Void)? = nil) {
+        let maxAttempts = 24
+        if hotkeyManager.hasPressedShortcutInputs && attempt < maxAttempts {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+                self?.pasteAtCursorWhenShortcutReleased(attempt: attempt + 1, completion: completion)
+            }
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            self?.pasteAtCursor()
+            completion?()
+        }
     }
 }
