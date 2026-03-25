@@ -7,10 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Customizable hold and toggle dictation shortcuts with modifier-only key support
+- Clipboard preservation — original clipboard restored after pasting transcribed text
+- Audio normalization to 16kHz mono before upload for consistent transcription quality
+- HTTP/2 curl fallback option for transcription (Settings > Advanced)
+- Configurable sound volume for recording start/stop sounds
+- Configurable shortcut start delay (0–500ms) to prevent accidental triggers
+
 ### Changed
 - Switch transcription model from whisper-large-v3 to whisper-large-v3-turbo for faster voice processing
 - Rewrite post-processing prompt to eliminate LLM commentary leaking into output
 - Improve spoken number list detection (e.g. "one ... two ... three" formats as 1. 2. 3.)
+- Recording overlay adapts UI for hold vs toggle mode
+- Makefile hardened for paths with spaces and improved DMG creation
+
+### Fixed
+- Custom vocabulary overriding unrelated words in transcription
+- Hotkey event consumption across key state transitions
 
 ## [0.1.0] - 2026-02-25
 
