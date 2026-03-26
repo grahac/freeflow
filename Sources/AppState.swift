@@ -95,7 +95,7 @@ private struct PreservedPasteboardSnapshot {
 
 private struct PendingClipboardRestore {
     let snapshot: PreservedPasteboardSnapshot
-    let expectedChangeCount: Int
+    let transcript: String
 }
 
 final class AppState: ObservableObject, @unchecked Sendable {
@@ -1312,7 +1312,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         pasteboard.setString(transcript, forType: .string)
 
         guard let snapshot else { return nil }
-        return PendingClipboardRestore(snapshot: snapshot, expectedChangeCount: pasteboard.changeCount)
+        return PendingClipboardRestore(snapshot: snapshot, transcript: transcript)
     }
 
     private func restoreClipboardIfNeeded(_ pendingRestore: PendingClipboardRestore?) {
@@ -1320,7 +1320,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
             let pasteboard = NSPasteboard.general
-            guard pasteboard.changeCount == pendingRestore.expectedChangeCount else { return }
+            // Only restore if our transcript is still on the clipboard.
+            // If the user copied something new, the clipboard will have different content — skip restore.
+            guard pasteboard.string(forType: .string) == pendingRestore.transcript else { return }
             pendingRestore.snapshot.restore(to: pasteboard)
         }
     }
