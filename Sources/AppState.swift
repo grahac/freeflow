@@ -117,7 +117,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
     private let soundVolumeStorageKey = "sound_volume"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
-    private let clipboardRestoreDelay: TimeInterval = 0.15
+    private let clipboardRestoreDelay: TimeInterval = 0.75
     let maxPipelineHistoryCount = 20
 
     @Published var hasCompletedSetup: Bool {

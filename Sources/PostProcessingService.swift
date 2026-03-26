@@ -107,8 +107,14 @@ CRITICAL: Your response must contain ONLY the cleaned text. No preamble, no expl
         let normalizedVocabulary = normalizedVocabularyText(customVocabulary)
         let vocabularyPrompt = if !normalizedVocabulary.isEmpty {
             """
-The speaker uses the following terms. ONLY use these to fix the spelling of a word the speaker clearly said. Never substitute a different word with one of these terms:
+SPELLING REFERENCE (use with extreme caution):
 \(normalizedVocabulary)
+
+These terms are ONLY for correcting Whisper misspellings of a word the speaker CLEARLY said. Rules:
+- ONLY replace a word if it is an obvious misspelling of one of these terms (e.g. "rivlry" → "rivalry", "Johnathen" → "Jonathan")
+- NEVER replace a real English word with a vocabulary term just because they sound vaguely similar
+- Examples of WRONG substitutions: "arrival" → "rivalry", "revival" → "rivalry", "drive" → "Deriv"
+- If in doubt, keep the original word from the transcription
 """
         } else {
             ""
