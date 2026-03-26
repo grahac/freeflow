@@ -34,70 +34,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
-private struct PreservedPasteboardEntry {
-    let type: NSPasteboard.PasteboardType
-    let value: Value
-
-    enum Value {
-        case string(String)
-        case propertyList(Any)
-        case data(Data)
-    }
-}
-
-private struct PreservedPasteboardItem {
-    let entries: [PreservedPasteboardEntry]
-
-    init(item: NSPasteboardItem) {
-        self.entries = item.types.compactMap { type in
-            if let string = item.string(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .string(string))
-            }
-            if let propertyList = item.propertyList(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .propertyList(propertyList))
-            }
-            if let data = item.data(forType: type) {
-                return PreservedPasteboardEntry(type: type, value: .data(data))
-            }
-            return nil
-        }
-    }
-
-    func makePasteboardItem() -> NSPasteboardItem {
-        let item = NSPasteboardItem()
-        for entry in entries {
-            switch entry.value {
-            case .string(let string):
-                item.setString(string, forType: entry.type)
-            case .propertyList(let propertyList):
-                item.setPropertyList(propertyList, forType: entry.type)
-            case .data(let data):
-                item.setData(data, forType: entry.type)
-            }
-        }
-        return item
-    }
-}
-
-private struct PreservedPasteboardSnapshot {
-    let items: [PreservedPasteboardItem]
-
-    init(pasteboard: NSPasteboard) {
-        self.items = (pasteboard.pasteboardItems ?? []).map(PreservedPasteboardItem.init)
-    }
-
-    func restore(to pasteboard: NSPasteboard) {
-        pasteboard.clearContents()
-        guard !items.isEmpty else { return }
-        _ = pasteboard.writeObjects(items.map { $0.makePasteboardItem() })
-    }
-}
-
-private struct PendingClipboardRestore {
-    let snapshot: PreservedPasteboardSnapshot
-    let transcript: String
-}
-
 final class AppState: ObservableObject, @unchecked Sendable {
     private let apiKeyStorageKey = "groq_api_key"
     private let apiBaseURLStorageKey = "api_base_url"
@@ -117,7 +53,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
     private let soundVolumeStorageKey = "sound_volume"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
-    private let clipboardRestoreDelay: TimeInterval = 0.75
+
     let maxPipelineHistoryCount = 20
 
     @Published var hasCompletedSetup: Bool {
@@ -1057,28 +993,26 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self.lastTranscript = trimmedFinalTranscript
                     self.isTranscribing = false
                     self.debugStatusMessage = "Done"
-                    let completionStatusText = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
-
                     if trimmedFinalTranscript.isEmpty {
                         self.statusText = "Nothing to transcribe"
                         self.overlayManager.dismiss()
                     } else {
-                        self.statusText = completionStatusText
+                        self.statusText = "Copied to clipboard!"
                         self.overlayManager.showDone()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                             self.overlayManager.dismiss()
                         }
 
-                        let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
-                        self.pasteAtCursorWhenShortcutReleased {
-                            self.restoreClipboardIfNeeded(pendingClipboardRestore)
-                        }
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(trimmedFinalTranscript, forType: .string)
+
+                        self.pasteAtCursorWhenShortcutReleased()
                     }
 
                     self.audioRecorder.cleanup()
 
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        if self.statusText == completionStatusText || self.statusText == "Nothing to transcribe" {
+                        if self.statusText == "Copied to clipboard!" || self.statusText == "Nothing to transcribe" {
                             self.statusText = "Ready"
                         }
                     }
@@ -1304,41 +1238,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         keyUp?.post(tap: .cgSessionEventTap)
     }
 
-    private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
-        let pasteboard = NSPasteboard.general
-        let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
 
-        pasteboard.clearContents()
-        pasteboard.setString(transcript, forType: .string)
-
-        guard let snapshot else { return nil }
-        return PendingClipboardRestore(snapshot: snapshot, transcript: transcript)
-    }
-
-    private func restoreClipboardIfNeeded(_ pendingRestore: PendingClipboardRestore?) {
-        guard let pendingRestore else { return }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
-            let pasteboard = NSPasteboard.general
-            // Only restore if our transcript is still on the clipboard.
-            // If the user copied something new, the clipboard will have different content — skip restore.
-            guard pasteboard.string(forType: .string) == pendingRestore.transcript else { return }
-            pendingRestore.snapshot.restore(to: pasteboard)
-        }
-    }
-
-    private func pasteAtCursorWhenShortcutReleased(attempt: Int = 0, completion: (() -> Void)? = nil) {
+    private func pasteAtCursorWhenShortcutReleased(attempt: Int = 0) {
         let maxAttempts = 24
         if hotkeyManager.hasPressedShortcutInputs && attempt < maxAttempts {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
-                self?.pasteAtCursorWhenShortcutReleased(attempt: attempt + 1, completion: completion)
+                self?.pasteAtCursorWhenShortcutReleased(attempt: attempt + 1)
             }
             return
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
             self?.pasteAtCursor()
-            completion?()
         }
     }
 }
