@@ -993,26 +993,36 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self.lastTranscript = trimmedFinalTranscript
                     self.isTranscribing = false
                     self.debugStatusMessage = "Done"
+                    let completionStatusText = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
                     if trimmedFinalTranscript.isEmpty {
                         self.statusText = "Nothing to transcribe"
                         self.overlayManager.dismiss()
                     } else {
-                        self.statusText = "Copied to clipboard!"
+                        self.statusText = completionStatusText
                         self.overlayManager.showDone()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                             self.overlayManager.dismiss()
                         }
 
+                        // Save the current clipboard contents before overwriting
+                        let savedClipboardString = self.preserveClipboard
+                            ? NSPasteboard.general.string(forType: .string) : nil
+
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(trimmedFinalTranscript, forType: .string)
 
-                        self.pasteAtCursorWhenShortcutReleased()
+                        self.pasteAtCursorWhenShortcutReleased {
+                            self.restoreClipboardIfNeeded(
+                                savedString: savedClipboardString,
+                                transcript: trimmedFinalTranscript
+                            )
+                        }
                     }
 
                     self.audioRecorder.cleanup()
 
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        if self.statusText == "Copied to clipboard!" || self.statusText == "Nothing to transcribe" {
+                        if self.statusText == completionStatusText || self.statusText == "Nothing to transcribe" {
                             self.statusText = "Ready"
                         }
                     }
@@ -1239,17 +1249,32 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
 
-    private func pasteAtCursorWhenShortcutReleased(attempt: Int = 0) {
+    private func pasteAtCursorWhenShortcutReleased(attempt: Int = 0, completion: (() -> Void)? = nil) {
         let maxAttempts = 24
         if hotkeyManager.hasPressedShortcutInputs && attempt < maxAttempts {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
-                self?.pasteAtCursorWhenShortcutReleased(attempt: attempt + 1)
+                self?.pasteAtCursorWhenShortcutReleased(attempt: attempt + 1, completion: completion)
             }
             return
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
             self?.pasteAtCursor()
+            completion?()
+        }
+    }
+
+    private func restoreClipboardIfNeeded(savedString: String?, transcript: String) {
+        guard let savedString else { return }
+
+        // Wait for the paste to be received by the target app before restoring
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            let pasteboard = NSPasteboard.general
+            // Only restore if our transcript is still on the clipboard.
+            // If the user copied something new in the meantime, leave it alone.
+            guard pasteboard.string(forType: .string) == transcript else { return }
+            pasteboard.clearContents()
+            pasteboard.setString(savedString, forType: .string)
         }
     }
 }
