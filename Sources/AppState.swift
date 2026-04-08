@@ -7,12 +7,23 @@ import ServiceManagement
 import ApplicationServices
 import ScreenCaptureKit
 import os.log
-
 private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+
+struct VoiceMacro: Codable, Identifiable, Equatable {
+    var id: UUID = UUID()
+    var command: String
+    var payload: String
+}
+
+struct PrecomputedMacro {
+    let original: VoiceMacro
+    let normalizedCommand: String
+}
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case prompts
+    case macros
     case runLog
 
     var id: String { rawValue }
@@ -21,6 +32,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .prompts: return "Prompts"
+        case .macros: return "Voice Macros"
         case .runLog: return "Run Log"
         }
     }
@@ -29,6 +41,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .prompts: return "text.bubble"
+        case .macros: return "music.mic"
         case .runLog: return "clock.arrow.circlepath"
         }
     }
@@ -52,6 +65,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
     private let soundVolumeStorageKey = "sound_volume"
+    private let voiceMacrosStorageKey = "voice_macros"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
 
     let maxPipelineHistoryCount = 20
@@ -157,8 +171,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private var precomputedMacros: [PrecomputedMacro] = []
+
+    @Published var voiceMacros: [VoiceMacro] = [] {
+        didSet {
+            if let data = try? JSONEncoder().encode(voiceMacros) {
+                UserDefaults.standard.set(data, forKey: voiceMacrosStorageKey)
+            }
+            precomputeMacros()
+        }
+    }
+
     @Published var isRecording = false
     @Published var isTranscribing = false
+    @Published var retryingItemIDs: Set<UUID> = []
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String?
     @Published var statusText: String = "Ready"
@@ -235,6 +261,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let forceHTTP2Transcription = UserDefaults.standard.bool(forKey: forceHTTP2TranscriptionStorageKey)
         let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
             ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
+        
+        let initialMacros: [VoiceMacro]
+        if let data = UserDefaults.standard.data(forKey: "voice_macros"),
+           let decoded = try? JSONDecoder().decode([VoiceMacro].self, from: data) {
+            initialMacros = decoded
+        } else {
+            initialMacros = []
+        }
+
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
         var removedAudioFileNames: [String] = []
@@ -267,12 +302,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.preserveClipboard = preserveClipboard
         self.forceHTTP2Transcription = forceHTTP2Transcription
         self.soundVolume = soundVolume
+        self.voiceMacros = initialMacros
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.hasScreenRecordingPermission = initialScreenCapturePermission
         self.screenshotEnabled = screenshotEnabled
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         self.selectedMicrophoneID = selectedMicrophoneID
+        self.precomputeMacros()
 
         refreshAvailableMicrophones()
         installAudioDeviceListener()
@@ -437,6 +474,114 @@ final class AppState: ObservableObject, @unchecked Sendable {
             pipelineHistory.remove(at: index)
         } catch {
             errorMessage = "Unable to delete run history entry: \(error.localizedDescription)"
+        }
+    }
+
+    func retryTranscription(item: PipelineHistoryItem) {
+        guard let audioFileName = item.audioFileName else { return }
+        guard !retryingItemIDs.contains(item.id) else { return }
+
+        retryingItemIDs.insert(item.id)
+
+        let audioURL = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
+            retryingItemIDs.remove(item.id)
+            errorMessage = "Audio file not found for retry."
+            return
+        }
+
+        let restoredContext = AppContext(
+            appName: nil,
+            bundleIdentifier: nil,
+            windowTitle: nil,
+            selectedText: nil,
+            currentActivity: item.contextSummary,
+            contextPrompt: item.contextPrompt,
+            screenshotDataURL: item.contextScreenshotDataURL,
+            screenshotMimeType: item.contextScreenshotDataURL != nil ? "image/jpeg" : nil,
+            screenshotError: nil
+        )
+
+        let transcriptionService = TranscriptionService(
+            apiKey: apiKey,
+            baseURL: apiBaseURL,
+            forceHTTP2: forceHTTP2Transcription
+        )
+        let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
+        let capturedCustomVocabulary = customVocabulary
+        let capturedCustomSystemPrompt = customSystemPrompt
+
+        Task {
+            do {
+                let rawTranscript = try await transcriptionService.transcribe(fileURL: audioURL)
+
+                let finalTranscript: String
+                let processingStatus: String
+                let postProcessingPrompt: String
+                do {
+                    let postProcessingResult = try await postProcessingService.postProcess(
+                        transcript: rawTranscript,
+                        context: restoredContext,
+                        customVocabulary: capturedCustomVocabulary,
+                        customSystemPrompt: capturedCustomSystemPrompt
+                    )
+                    finalTranscript = postProcessingResult.transcript
+                    processingStatus = "Post-processing succeeded (retried)"
+                    postProcessingPrompt = postProcessingResult.prompt
+                } catch {
+                    finalTranscript = rawTranscript
+                    processingStatus = "Post-processing failed on retry, using raw transcript"
+                    postProcessingPrompt = ""
+                }
+
+                await MainActor.run {
+                    let updatedItem = PipelineHistoryItem(
+                        id: item.id,
+                        timestamp: item.timestamp,
+                        rawTranscript: rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines),
+                        postProcessedTranscript: finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines),
+                        postProcessingPrompt: postProcessingPrompt,
+                        contextSummary: item.contextSummary,
+                        contextPrompt: item.contextPrompt,
+                        contextScreenshotDataURL: item.contextScreenshotDataURL,
+                        contextScreenshotStatus: item.contextScreenshotStatus,
+                        postProcessingStatus: processingStatus,
+                        debugStatus: "Retried",
+                        customVocabulary: item.customVocabulary,
+                        audioFileName: item.audioFileName
+                    )
+                    do {
+                        try pipelineHistoryStore.update(updatedItem)
+                        pipelineHistory = pipelineHistoryStore.loadAllHistory()
+                    } catch {
+                        errorMessage = "Failed to save retry result: \(error.localizedDescription)"
+                    }
+                    retryingItemIDs.remove(item.id)
+                }
+            } catch {
+                await MainActor.run {
+                    let updatedItem = PipelineHistoryItem(
+                        id: item.id,
+                        timestamp: item.timestamp,
+                        rawTranscript: item.rawTranscript,
+                        postProcessedTranscript: item.postProcessedTranscript,
+                        postProcessingPrompt: item.postProcessingPrompt,
+                        contextSummary: item.contextSummary,
+                        contextPrompt: item.contextPrompt,
+                        contextScreenshotDataURL: item.contextScreenshotDataURL,
+                        contextScreenshotStatus: item.contextScreenshotStatus,
+                        postProcessingStatus: "Error: \(error.localizedDescription)",
+                        debugStatus: "Retry failed",
+                        customVocabulary: item.customVocabulary,
+                        audioFileName: item.audioFileName
+                    )
+                    do {
+                        try pipelineHistoryStore.update(updatedItem)
+                        pipelineHistory = pipelineHistoryStore.loadAllHistory()
+                    } catch {}
+                    retryingItemIDs.remove(item.id)
+                }
+            }
         }
     }
 
@@ -879,6 +1024,56 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private func precomputeMacros() {
+        precomputedMacros = voiceMacros.map { macro in
+            PrecomputedMacro(
+                original: macro,
+                normalizedCommand: normalize(macro.command)
+            )
+        }
+    }
+
+    private func normalize(_ text: String) -> String {
+        let lowercased = text.lowercased()
+        let strippedPunctuation = lowercased.components(separatedBy: CharacterSet.punctuationCharacters).joined()
+        return strippedPunctuation.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func findMatchingMacro(for transcript: String) -> VoiceMacro? {
+        let normalizedTranscript = normalize(transcript)
+        guard !normalizedTranscript.isEmpty else { return nil }
+
+        return precomputedMacros.first {
+            normalizedTranscript == $0.normalizedCommand
+        }?.original
+    }
+
+    private func processTranscript(
+        _ rawTranscript: String,
+        context: AppContext,
+        postProcessingService: PostProcessingService,
+        customVocabulary: String,
+        customSystemPrompt: String
+    ) async -> (finalTranscript: String, status: String, prompt: String) {
+        if let macro = findMatchingMacro(for: rawTranscript) {
+            os_log(.info, log: recordingLog, "Voice macro triggered: %{public}@", macro.command)
+            return (macro.payload, "Voice macro used: \(macro.command)", "")
+        }
+        
+        do {
+            let result = try await postProcessingService.postProcess(
+                transcript: rawTranscript,
+                context: context,
+                customVocabulary: customVocabulary,
+                customSystemPrompt: customSystemPrompt
+            )
+            return (result.transcript, "Post-processing succeeded", result.prompt)
+        } catch {
+            os_log(.error, log: recordingLog, "Post-processing failed: %{public}@", error.localizedDescription)
+            return (rawTranscript, "Post-processing failed, using raw transcript", "")
+        }
+    }
+
     private func stopAndTranscribe() {
         cancelPendingShortcutStart()
         shortcutSessionController.reset()
@@ -951,24 +1146,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 await MainActor.run { [weak self] in
                     self?.debugStatusMessage = "Running post-processing"
                 }
-                let finalTranscript: String
-                let processingStatus: String
-                let postProcessingPrompt: String
-                do {
-                    let postProcessingResult = try await postProcessingService.postProcess(
-                        transcript: rawTranscript,
-                        context: appContext,
-                        customVocabulary: customVocabulary,
-                        customSystemPrompt: customSystemPrompt
-                    )
-                    finalTranscript = postProcessingResult.transcript
-                    processingStatus = "Post-processing succeeded"
-                    postProcessingPrompt = postProcessingResult.prompt
-                } catch {
-                    finalTranscript = rawTranscript
-                    processingStatus = "Post-processing failed, using raw transcript"
-                    postProcessingPrompt = ""
-                }
+                let (finalTranscript, processingStatus, postProcessingPrompt) = await processTranscript(
+                    rawTranscript,
+                    context: appContext,
+                    postProcessingService: postProcessingService,
+                    customVocabulary: customVocabulary,
+                    customSystemPrompt: customSystemPrompt
+                )
+
                 await MainActor.run {
                     self.lastContextSummary = appContext.contextSummary
                     self.lastContextScreenshotDataURL = appContext.screenshotDataURL
