@@ -47,6 +47,70 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
+private struct PreservedPasteboardEntry {
+    let type: NSPasteboard.PasteboardType
+    let value: Value
+
+    enum Value {
+        case string(String)
+        case propertyList(Any)
+        case data(Data)
+    }
+}
+
+private struct PreservedPasteboardItem {
+    let entries: [PreservedPasteboardEntry]
+
+    init(item: NSPasteboardItem) {
+        self.entries = item.types.compactMap { type in
+            if let string = item.string(forType: type) {
+                return PreservedPasteboardEntry(type: type, value: .string(string))
+            }
+            if let propertyList = item.propertyList(forType: type) {
+                return PreservedPasteboardEntry(type: type, value: .propertyList(propertyList))
+            }
+            if let data = item.data(forType: type) {
+                return PreservedPasteboardEntry(type: type, value: .data(data))
+            }
+            return nil
+        }
+    }
+
+    func makePasteboardItem() -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        for entry in entries {
+            switch entry.value {
+            case .string(let string):
+                item.setString(string, forType: entry.type)
+            case .propertyList(let propertyList):
+                item.setPropertyList(propertyList, forType: entry.type)
+            case .data(let data):
+                item.setData(data, forType: entry.type)
+            }
+        }
+        return item
+    }
+}
+
+private struct PreservedPasteboardSnapshot {
+    let items: [PreservedPasteboardItem]
+
+    init(pasteboard: NSPasteboard) {
+        self.items = (pasteboard.pasteboardItems ?? []).map(PreservedPasteboardItem.init)
+    }
+
+    func restore(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        guard !items.isEmpty else { return }
+        _ = pasteboard.writeObjects(items.map { $0.makePasteboardItem() })
+    }
+}
+
+private struct PendingClipboardRestore {
+    let snapshot: PreservedPasteboardSnapshot
+    let expectedChangeCount: Int
+}
+
 final class AppState: ObservableObject, @unchecked Sendable {
     private let apiKeyStorageKey = "groq_api_key"
     private let apiBaseURLStorageKey = "api_base_url"
@@ -67,7 +131,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let soundVolumeStorageKey = "sound_volume"
     private let voiceMacrosStorageKey = "voice_macros"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
-
+    private let clipboardRestoreDelay: TimeInterval = 0.15
     let maxPipelineHistoryCount = 20
 
     @Published var hasCompletedSetup: Bool {
@@ -1189,18 +1253,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             self.overlayManager.dismiss()
                         }
 
-                        // Save the current clipboard contents before overwriting
-                        let savedClipboardString = self.preserveClipboard
-                            ? NSPasteboard.general.string(forType: .string) : nil
-
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(trimmedFinalTranscript, forType: .string)
-
+                        let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
                         self.pasteAtCursorWhenShortcutReleased {
-                            self.restoreClipboardIfNeeded(
-                                savedString: savedClipboardString,
-                                transcript: trimmedFinalTranscript
-                            )
+                            self.restoreClipboardIfNeeded(pendingClipboardRestore)
                         }
                     }
 
@@ -1449,17 +1504,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func restoreClipboardIfNeeded(savedString: String?, transcript: String) {
-        guard let savedString else { return }
+    private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
+        let pasteboard = NSPasteboard.general
+        let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
 
-        // Wait for the paste to be received by the target app before restoring
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        pasteboard.clearContents()
+        pasteboard.setString(transcript, forType: .string)
+
+        guard let snapshot else { return nil }
+        return PendingClipboardRestore(snapshot: snapshot, expectedChangeCount: pasteboard.changeCount)
+    }
+
+    private func restoreClipboardIfNeeded(_ pendingRestore: PendingClipboardRestore?) {
+        guard let pendingRestore else { return }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
             let pasteboard = NSPasteboard.general
-            // Only restore if our transcript is still on the clipboard.
-            // If the user copied something new in the meantime, leave it alone.
-            guard pasteboard.string(forType: .string) == transcript else { return }
-            pasteboard.clearContents()
-            pasteboard.setString(savedString, forType: .string)
+            guard pasteboard.changeCount == pendingRestore.expectedChangeCount else { return }
+            pendingRestore.snapshot.restore(to: pasteboard)
         }
     }
 }

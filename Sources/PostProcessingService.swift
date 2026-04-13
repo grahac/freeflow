@@ -3,6 +3,7 @@ import Foundation
 enum PostProcessingError: LocalizedError {
     case requestFailed(Int, String)
     case invalidResponse(String)
+    case emptyOutput
     case requestTimedOut(TimeInterval)
 
     var errorDescription: String? {
@@ -11,6 +12,8 @@ enum PostProcessingError: LocalizedError {
             "Post-processing failed with status \(statusCode): \(details)"
         case .invalidResponse(let details):
             "Invalid post-processing response: \(details)"
+        case .emptyOutput:
+            "Post-processing returned empty output"
         case .requestTimedOut(let seconds):
             "Post-processing timed out after \(Int(seconds))s"
         }
@@ -93,6 +96,7 @@ Output hygiene:
     private let baseURL: String
     private let defaultModel = "openai/gpt-oss-20b"
     private let fallbackModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let postProcessingMaxCompletionTokens = 4096
     private let postProcessingTimeoutSeconds: TimeInterval = 20
 
     init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1") {
@@ -155,7 +159,17 @@ Output hygiene:
                 customSystemPrompt: customSystemPrompt
             )
         } catch let error as PostProcessingError {
-            guard case .requestFailed(let statusCode, _) = error, statusCode == 429 else {
+            let shouldFallback: Bool
+            switch error {
+            case .requestFailed(let statusCode, _):
+                shouldFallback = statusCode == 429
+            case .emptyOutput:
+                shouldFallback = true
+            default:
+                shouldFallback = false
+            }
+
+            guard shouldFallback else {
                 throw error
             }
         }
@@ -223,7 +237,7 @@ Model: \(model)
 \(userMessage)
 """
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": model,
             "temperature": 0.0,
             "messages": [
@@ -237,6 +251,9 @@ Model: \(model)
                 ]
             ]
         ]
+        if model == defaultModel {
+            payload["max_completion_tokens"] = postProcessingMaxCompletionTokens
+        }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
 
@@ -258,8 +275,13 @@ Model: \(model)
             throw PostProcessingError.invalidResponse("Missing choices[0].message.content")
         }
 
+        let sanitizedTranscript = sanitizePostProcessedTranscript(content)
+        guard !sanitizedTranscript.isEmpty else {
+            throw PostProcessingError.emptyOutput
+        }
+
         return PostProcessingResult(
-            transcript: sanitizePostProcessedTranscript(content),
+            transcript: sanitizedTranscript,
             prompt: promptForDisplay
         )
     }
