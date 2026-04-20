@@ -4,6 +4,48 @@ import Combine
 import Foundation
 import ServiceManagement
 
+private struct SetupProviderSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var apiBaseURLInput: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Advanced Provider Settings")
+                    .font(.title2.weight(.semibold))
+                Text("Use these fields when pointing FreeFlow at another OpenAI-compatible provider or when you need custom model IDs.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+
+            Divider()
+
+            ScrollView {
+                ProviderSettingsFields(
+                    apiBaseURLInput: $apiBaseURLInput,
+                    showsModelDescription: true
+                )
+                .padding(20)
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+        }
+        .frame(width: 560, height: 520)
+    }
+}
+
 struct SetupView: View {
     var onComplete: () -> Void
     @EnvironmentObject var appState: AppState
@@ -17,6 +59,7 @@ struct SetupView: View {
         case accessibility
         case holdShortcut
         case toggleShortcut
+        case commandMode
         case vocabulary
         case launchAtLogin
         case testTranscription
@@ -27,8 +70,10 @@ struct SetupView: View {
     @State private var micPermissionGranted = false
     @State private var accessibilityGranted = false
     @State private var apiKeyInput: String = ""
+    @State private var apiBaseURLInput: String = ""
     @State private var isValidatingKey = false
     @State private var keyValidationError: String?
+    @State private var showingProviderSettingsSheet = false
     @State private var accessibilityTimer: Timer?
     @State private var customVocabularyInput: String = ""
     @StateObject private var githubCache = GitHubMetadataCache.shared
@@ -139,6 +184,7 @@ struct SetupView: View {
         .frame(width: 520, height: 680)
         .onAppear {
             apiKeyInput = appState.apiKey
+            apiBaseURLInput = appState.apiBaseURL
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
@@ -149,6 +195,10 @@ struct SetupView: View {
         .onDisappear {
             accessibilityTimer?.invalidate()
             appState.resumeHotkeyMonitoringAfterShortcutCapture()
+        }
+        .sheet(isPresented: $showingProviderSettingsSheet) {
+            SetupProviderSettingsSheet(apiBaseURLInput: $apiBaseURLInput)
+                .environmentObject(appState)
         }
         .onChange(of: isCapturingShortcut) { isCapturing in
             if isCapturing {
@@ -174,6 +224,8 @@ struct SetupView: View {
             holdShortcutStep
         case .toggleShortcut:
             toggleShortcutStep
+        case .commandMode:
+            commandModeStep
         case .vocabulary:
             vocabularyStep
         case .launchAtLogin:
@@ -349,57 +401,96 @@ struct SetupView: View {
     }
 
     var apiKeyStep: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "key.fill")
-                .font(.system(size: 60))
-                .foregroundStyle(.blue)
+        VStack {
+            Spacer(minLength: 0)
 
-            Text("Groq API Key")
-                .font(.title)
-                .fontWeight(.bold)
+            VStack(spacing: 20) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 60))
+                    .foregroundStyle(.blue)
 
-            Text("FreeFlow uses Groq for fast, high-accuracy transcription.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text("API Key")
+                    .font(.title)
+                    .fontWeight(.bold)
 
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("How to get a free API key:")
-                        .font(.subheadline.weight(.semibold))
-                    VStack(alignment: .leading, spacing: 2) {
-                        instructionRow(number: "1", text: "Go to [console.groq.com/keys](https://console.groq.com/keys)")
-                        instructionRow(number: "2", text: "Create a free account (if you don't have one)")
-                        instructionRow(number: "3", text: "Click **Create API Key** and copy it")
-                    }
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.blue.opacity(0.06))
-                )
+                Text("Enter an API key for your OpenAI-compatible provider. If you are not using Groq, expand the advanced provider settings and enter that provider's base URL and model IDs before continuing.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("API Key")
-                        .font(.headline)
-                    SecureField("Paste your Groq API key", text: $apiKeyInput)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .disabled(isValidatingKey)
-                        .onChange(of: apiKeyInput) { _ in
-                            keyValidationError = nil
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Using Groq?")
+                            .font(.subheadline.weight(.semibold))
+                        VStack(alignment: .leading, spacing: 2) {
+                            instructionRow(number: "1", text: "Go to [console.groq.com/keys](https://console.groq.com/keys)")
+                            instructionRow(number: "2", text: "Create a free account (if you don't have one)")
+                            instructionRow(number: "3", text: "Click **Create API Key** and copy it")
                         }
-
-                    if let error = keyValidationError {
-                        Label(error, systemImage: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .font(.caption)
                     }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.blue.opacity(0.06))
+                    )
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("API Key")
+                            .font(.headline)
+                        SecureField("Paste your API key", text: $apiKeyInput)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .disabled(isValidatingKey)
+                            .onChange(of: apiKeyInput) { _ in
+                                keyValidationError = nil
+                            }
+
+                        if let error = keyValidationError {
+                            Label(error, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                        }
+                    }
+
+                    Button {
+                        showingProviderSettingsSheet = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "slider.horizontal.3")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Advanced Provider Settings")
+                                    .foregroundStyle(.primary)
+                                Text("Base URL and model IDs")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
                 }
             }
+            .frame(maxWidth: 440)
 
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     var micPermissionStep: some View {
@@ -600,6 +691,85 @@ struct SetupView: View {
         }
     }
 
+    var commandModeStep: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "pencil")
+                .font(.system(size: 60))
+                .foregroundStyle(.blue)
+
+            Text("Edit Mode")
+                .font(.title)
+                .fontWeight(.bold)
+
+            Text("Transform selected text with a spoken instruction instead of dictating over it.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle("Enable Edit Mode", isOn: Binding(
+                    get: { appState.isCommandModeEnabled },
+                    set: { newValue in
+                        _ = appState.setCommandModeEnabled(newValue)
+                    }
+                ))
+
+                Picker("Invocation Style", selection: Binding(
+                    get: { appState.commandModeStyle },
+                    set: { newValue in
+                        _ = appState.setCommandModeStyle(newValue)
+                    }
+                )) {
+                    ForEach(CommandModeStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(!appState.isCommandModeEnabled)
+
+                Group {
+                    switch appState.commandModeStyle {
+                    case .automatic:
+                        Text("Automatic mode uses your normal dictation shortcut. If text is selected, FreeFlow transforms that selection instead of dictating new text.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .manual:
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Manual mode only triggers when you hold an extra modifier together with your normal dictation shortcut.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Picker("Extra Modifier", selection: Binding(
+                                get: { appState.commandModeManualModifier },
+                                set: { newValue in
+                                    _ = appState.setCommandModeManualModifier(newValue)
+                                }
+                            )) {
+                                ForEach(CommandModeManualModifier.allCases) { modifier in
+                                    Text(modifier.title).tag(modifier)
+                                }
+                            }
+                            .disabled(!appState.isCommandModeEnabled || appState.commandModeStyle != .manual)
+                        }
+                    }
+                }
+                .opacity(appState.isCommandModeEnabled ? 1 : 0.5)
+
+                if let validationMessage = appState.commandModeManualModifierValidationMessage {
+                    Label(validationMessage, systemImage: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(10)
+        }
+    }
+
     var launchAtLoginStep: some View {
         VStack(spacing: 20) {
             Image(systemName: "sunrise.fill")
@@ -791,6 +961,17 @@ struct SetupView: View {
                 if appState.hasEnabledHoldShortcut && appState.hasEnabledToggleShortcut {
                     HowToRow(icon: "arrow.triangle.branch", text: "While holding, press the toggle shortcut to latch on")
                 }
+                if appState.isCommandModeEnabled {
+                    switch appState.commandModeStyle {
+                    case .automatic:
+                        HowToRow(icon: "wand.and.stars", text: "With text selected, your normal shortcut transforms the selection")
+                    case .manual:
+                        HowToRow(
+                            icon: "wand.and.stars",
+                            text: "Hold \(appState.commandModeManualModifier.title) with your normal shortcut to transform selected text"
+                        )
+                    }
+                }
                 HowToRow(icon: "doc.on.clipboard", text: "Text is typed at your cursor & copied")
             }
             .padding(.top, 10)
@@ -856,11 +1037,14 @@ struct SetupView: View {
 
     func validateAndContinue() {
         let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL = apiBaseURLInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBaseURL = baseURL.isEmpty ? AppState.defaultAPIBaseURL : baseURL
+        appState.apiBaseURL = resolvedBaseURL
         isValidatingKey = true
         keyValidationError = nil
 
         Task {
-            let valid = await TranscriptionService.validateAPIKey(key, baseURL: appState.apiBaseURL)
+            let valid = await TranscriptionService.validateAPIKey(key, baseURL: resolvedBaseURL)
             await MainActor.run {
                 isValidatingKey = false
                 if valid {
@@ -869,7 +1053,7 @@ struct SetupView: View {
                         currentStep = nextStep(currentStep)
                     }
                 } else {
-                    keyValidationError = "Invalid API key. Please check and try again."
+                    keyValidationError = "Validation failed. Please check your API key and provider settings, then try again."
                 }
             }
         }
@@ -939,8 +1123,24 @@ struct SetupView: View {
                 }
                 do {
                     let recorder = AudioRecorder()
+                    recorder.onRecordingFailure = { [weak recorder] error in
+                        guard let recorder else { return }
+                        Task { @MainActor in
+                            testAudioLevelCancellable?.cancel()
+                            testAudioLevelCancellable = nil
+                            testAudioLevel = 0.0
+                            testHotkeyHarness.isTranscribing = false
+                            testAudioRecorder = nil
+                            testError = error.localizedDescription
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                testPhase = .done
+                            }
+                            recorder.cleanup()
+                        }
+                    }
                     try recorder.startRecording(deviceUID: appState.selectedMicrophoneID)
                     testAudioRecorder = recorder
+                    testError = nil
                     testAudioLevelCancellable = recorder.$audioLevel
                         .receive(on: DispatchQueue.main)
                         .sink { level in
@@ -959,7 +1159,6 @@ struct SetupView: View {
 
             case .stop:
                 guard testPhase == .recording, let recorder = testAudioRecorder else { return }
-                let fileURL = recorder.stopRecording()
                 testAudioLevelCancellable?.cancel()
                 testAudioLevelCancellable = nil
                 testAudioLevel = 0.0
@@ -968,41 +1167,52 @@ struct SetupView: View {
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                     testPhase = .transcribing
                 }
-
-                guard let url = fileURL else {
-                    testHotkeyHarness.isTranscribing = false
-                    testError = "No audio file was created."
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        testPhase = .done
-                    }
-                    return
-                }
-
-                Task {
-                    do {
-                        let service = TranscriptionService(
-                            apiKey: appState.apiKey,
-                            baseURL: appState.apiBaseURL,
-                            forceHTTP2: appState.forceHTTP2Transcription
-                        )
-                        let transcript = try await service.transcribe(fileURL: url)
-                        await MainActor.run {
+                recorder.stopRecording { url in
+                    guard let url else {
+                        Task { @MainActor in
                             testHotkeyHarness.isTranscribing = false
-                            testTranscript = transcript
-                            withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                            testAudioRecorder = nil
+                            if testError == nil {
+                                testError = "No audio file was created."
+                            }
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                                 testPhase = .done
                             }
+                            recorder.cleanup()
                         }
-                    } catch {
-                        await MainActor.run {
-                            testHotkeyHarness.isTranscribing = false
-                            testError = error.localizedDescription
-                            withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
-                                testPhase = .done
+                        return
+                    }
+
+                    Task {
+                        do {
+                            let service = try TranscriptionService(
+                                apiKey: appState.apiKey,
+                                baseURL: appState.apiBaseURL,
+                                transcriptionModel: appState.transcriptionModel
+                            )
+                            let transcript = try await service.transcribe(fileURL: url)
+                            await MainActor.run {
+                                testHotkeyHarness.isTranscribing = false
+                                testAudioRecorder = nil
+                                testTranscript = transcript
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    testPhase = .done
+                                }
+                            }
+                        } catch {
+                            await MainActor.run {
+                                testHotkeyHarness.isTranscribing = false
+                                testAudioRecorder = nil
+                                testError = error.localizedDescription
+                                withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                                    testPhase = .done
+                                }
                             }
                         }
+                        await MainActor.run {
+                            recorder.cleanup()
+                        }
                     }
-                    recorder.cleanup()
                 }
 
             case .switchedToToggle:
@@ -1021,8 +1231,7 @@ struct SetupView: View {
         testAudioLevelCancellable?.cancel()
         testAudioLevelCancellable = nil
         if let recorder = testAudioRecorder, recorder.isRecording {
-            _ = recorder.stopRecording()
-            recorder.cleanup()
+            recorder.cancelRecording()
         }
         testAudioRecorder = nil
     }
@@ -1037,9 +1246,8 @@ struct SetupView: View {
         testHotkeyHarness.resetSession()
         if let recorder = testAudioRecorder {
             if recorder.isRecording {
-                _ = recorder.stopRecording()
+                recorder.cancelRecording()
             }
-            recorder.cleanup()
             testAudioRecorder = nil
         }
     }

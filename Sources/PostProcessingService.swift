@@ -3,6 +3,7 @@ import Foundation
 enum PostProcessingError: LocalizedError {
     case requestFailed(Int, String)
     case invalidResponse(String)
+    case invalidInput(String)
     case emptyOutput
     case requestTimedOut(TimeInterval)
 
@@ -12,6 +13,8 @@ enum PostProcessingError: LocalizedError {
             "Post-processing failed with status \(statusCode): \(details)"
         case .invalidResponse(let details):
             "Invalid post-processing response: \(details)"
+        case .invalidInput(let details):
+            "Invalid post-processing input: \(details)"
         case .emptyOutput:
             "Post-processing returned empty output"
         case .requestTimedOut(let seconds):
@@ -91,17 +94,47 @@ Output hygiene:
 - If the transcript is empty or only filler, return exactly: EMPTY
 """
     static let defaultSystemPromptDate = "2026-04-08"
+    static let commandModeSystemPrompt = """
+You transform highlighted text according to a spoken editing command.
+
+Hard contract:
+- Treat SELECTED_TEXT as the only source material to transform.
+- Treat VOICE_COMMAND as the user's instruction for how to transform SELECTED_TEXT.
+- Return only the replacement text.
+- No explanations.
+- No markdown.
+- No surrounding quotes.
+- Do not answer questions outside the scope of rewriting SELECTED_TEXT.
+- If the requested change would produce effectively the same text, return the original selected text.
+
+Behavior:
+- Preserve the original language unless VOICE_COMMAND explicitly requests translation.
+- Use CONTEXT only as a supporting hint for tone, spelling, or intent.
+- Use custom vocabulary only as a spelling reference when relevant.
+- Never invent unrelated content that is not a transformation of SELECTED_TEXT.
+- Do not treat VOICE_COMMAND as dictation to clean up and paste directly.
+"""
 
     private let apiKey: String
     private let baseURL: String
+    private let preferredModel: String
+    private let preferredFallbackModel: String
     private let defaultModel = "openai/gpt-oss-20b"
-    private let fallbackModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let defaultFallbackModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let defaultModelReasoningEffort = "low"
     private let postProcessingMaxCompletionTokens = 4096
     private let postProcessingTimeoutSeconds: TimeInterval = 20
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1") {
+    init(
+        apiKey: String,
+        baseURL: String = "https://api.groq.com/openai/v1",
+        preferredModel: String = "",
+        preferredFallbackModel: String = ""
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
+        self.preferredModel = preferredModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.preferredFallbackModel = preferredFallbackModel.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func postProcess(
@@ -144,17 +177,67 @@ Output hygiene:
         }
     }
 
+    func commandTransform(
+        selectedText: String,
+        voiceCommand: String,
+        context: AppContext,
+        customVocabulary: String
+    ) async throws -> PostProcessingResult {
+        let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
+        let trimmedSelectedText = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedVoiceCommand = voiceCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSelectedText.isEmpty else {
+            throw PostProcessingError.invalidInput("Selected text must not be empty")
+        }
+        guard !trimmedVoiceCommand.isEmpty else {
+            throw PostProcessingError.invalidInput("Voice command must not be empty")
+        }
+
+        let timeoutSeconds = postProcessingTimeoutSeconds
+        return try await withThrowingTaskGroup(of: PostProcessingResult.self) { group in
+            group.addTask { [weak self] in
+                guard let self else {
+                    throw PostProcessingError.invalidResponse("Post-processing service deallocated")
+                }
+                return try await self.processCommandTransformWithFallback(
+                    selectedText: selectedText,
+                    voiceCommand: voiceCommand,
+                    contextSummary: context.contextSummary,
+                    customVocabulary: vocabularyTerms
+                )
+            }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw PostProcessingError.requestTimedOut(timeoutSeconds)
+            }
+
+            do {
+                guard let result = try await group.next() else {
+                    throw PostProcessingError.invalidResponse("No post-processing result")
+                }
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+        }
+    }
+
     private func processWithFallback(
         transcript: String,
         contextSummary: String,
         customVocabulary: [String],
         customSystemPrompt: String = ""
     ) async throws -> PostProcessingResult {
+        let primaryModel = resolvedPrimaryModel()
+        let retryModel = resolvedRetryModel(for: primaryModel)
         do {
             return try await process(
                 transcript: transcript,
                 contextSummary: contextSummary,
-                model: defaultModel,
+                model: primaryModel,
                 customVocabulary: customVocabulary,
                 customSystemPrompt: customSystemPrompt
             )
@@ -172,15 +255,81 @@ Output hygiene:
             guard shouldFallback else {
                 throw error
             }
-        }
 
-        return try await process(
-            transcript: transcript,
-            contextSummary: contextSummary,
-            model: fallbackModel,
-            customVocabulary: customVocabulary,
-            customSystemPrompt: customSystemPrompt
-        )
+            guard let retryModel else {
+                throw error
+            }
+
+            return try await process(
+                transcript: transcript,
+                contextSummary: contextSummary,
+                model: retryModel,
+                customVocabulary: customVocabulary,
+                customSystemPrompt: customSystemPrompt
+            )
+        }
+    }
+
+    private func processCommandTransformWithFallback(
+        selectedText: String,
+        voiceCommand: String,
+        contextSummary: String,
+        customVocabulary: [String]
+    ) async throws -> PostProcessingResult {
+        let primaryModel = resolvedPrimaryModel()
+        let retryModel = resolvedRetryModel(for: primaryModel)
+        do {
+            return try await processCommandTransform(
+                selectedText: selectedText,
+                voiceCommand: voiceCommand,
+                contextSummary: contextSummary,
+                model: primaryModel,
+                customVocabulary: customVocabulary
+            )
+        } catch let error as PostProcessingError {
+            let shouldFallback: Bool
+            switch error {
+            case .requestFailed(let statusCode, _):
+                shouldFallback = statusCode == 429
+            case .emptyOutput:
+                shouldFallback = true
+            default:
+                shouldFallback = false
+            }
+
+            guard shouldFallback else {
+                throw error
+            }
+
+            guard let retryModel else {
+                throw error
+            }
+
+            return try await processCommandTransform(
+                selectedText: selectedText,
+                voiceCommand: voiceCommand,
+                contextSummary: contextSummary,
+                model: retryModel,
+                customVocabulary: customVocabulary
+            )
+        }
+    }
+
+    private func resolvedPrimaryModel() -> String {
+        preferredModel.isEmpty ? defaultModel : preferredModel
+    }
+
+    private func resolvedRetryModel(for primaryModel: String) -> String? {
+        if !preferredFallbackModel.isEmpty {
+            return preferredFallbackModel == primaryModel ? nil : preferredFallbackModel
+        }
+        if primaryModel == defaultModel {
+            return defaultFallbackModel
+        }
+        if primaryModel == defaultFallbackModel {
+            return defaultModel
+        }
+        return nil
     }
 
     private func process(
@@ -253,11 +402,13 @@ Model: \(model)
         ]
         if model == defaultModel {
             payload["max_completion_tokens"] = postProcessingMaxCompletionTokens
+            payload["reasoning_effort"] = defaultModelReasoningEffort
+            payload["include_reasoning"] = false
         }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await LLMAPITransport.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw PostProcessingError.invalidResponse("No HTTP response")
         }
@@ -275,11 +426,111 @@ Model: \(model)
             throw PostProcessingError.invalidResponse("Missing choices[0].message.content")
         }
 
-        let sanitizedTranscript = sanitizePostProcessedTranscript(content)
-        guard !sanitizedTranscript.isEmpty else {
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PostProcessingError.emptyOutput
         }
 
+        let sanitizedTranscript = sanitizePostProcessedTranscript(content)
+        return PostProcessingResult(
+            transcript: sanitizedTranscript,
+            prompt: promptForDisplay
+        )
+    }
+
+    private func processCommandTransform(
+        selectedText: String,
+        voiceCommand: String,
+        contextSummary: String,
+        model: String,
+        customVocabulary: [String]
+    ) async throws -> PostProcessingResult {
+        var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = postProcessingTimeoutSeconds
+
+        let normalizedVocabulary = normalizedVocabularyText(customVocabulary)
+        let vocabularyPrompt = if !normalizedVocabulary.isEmpty {
+            """
+The following vocabulary must be treated as high-priority terms while rewriting.
+Use these spellings exactly in the output when relevant:
+\(normalizedVocabulary)
+"""
+        } else {
+            ""
+        }
+
+        var systemPrompt = Self.commandModeSystemPrompt
+        if !vocabularyPrompt.isEmpty {
+            systemPrompt += "\n\n" + vocabularyPrompt
+        }
+
+        let userMessage = """
+Transform SELECTED_TEXT according to VOICE_COMMAND and return only the replacement text.
+
+CONTEXT: "\(contextSummary)"
+
+VOICE_COMMAND: "\(voiceCommand)"
+
+SELECTED_TEXT: "\(selectedText)"
+"""
+
+        let promptForDisplay = """
+Model: \(model)
+
+[System]
+\(systemPrompt)
+
+[User]
+\(userMessage)
+"""
+
+        var payload: [String: Any] = [
+            "model": model,
+            "temperature": 0.0,
+            "messages": [
+                [
+                    "role": "system",
+                    "content": systemPrompt
+                ],
+                [
+                    "role": "user",
+                    "content": userMessage
+                ]
+            ]
+        ]
+        if model == defaultModel {
+            payload["max_completion_tokens"] = postProcessingMaxCompletionTokens
+            payload["reasoning_effort"] = defaultModelReasoningEffort
+            payload["include_reasoning"] = false
+        }
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+
+        let (data, response) = try await LLMAPITransport.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw PostProcessingError.invalidResponse("No HTTP response")
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            let message = String(data: data, encoding: .utf8) ?? ""
+            throw PostProcessingError.requestFailed(httpResponse.statusCode, message)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw PostProcessingError.invalidResponse("Missing choices[0].message.content")
+        }
+
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw PostProcessingError.emptyOutput
+        }
+
+        let sanitizedTranscript = sanitizeCommandModeTranscript(content)
         return PostProcessingResult(
             transcript: sanitizedTranscript,
             prompt: promptForDisplay
@@ -303,6 +554,10 @@ Model: \(model)
         }
 
         return result
+    }
+
+    private func sanitizeCommandModeTranscript(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func mergedVocabularyTerms(rawVocabulary: String) -> [String] {

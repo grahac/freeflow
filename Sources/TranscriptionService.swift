@@ -6,29 +6,36 @@ private let transcriptionLog = OSLog(subsystem: "com.zachlatta.freeflow", catego
 
 class TranscriptionService {
     private let apiKey: String
-    private let baseURL: String
-    private let forceHTTP2: Bool
-    private let transcriptionModel = "whisper-large-v3-turbo"
+    private let baseURL: URL
+    private let transcriptionModel: String
+    private let transcriptionResponseFormat = "verbose_json"
     private let transcriptionTimeoutSeconds: TimeInterval = 20
     private let uploadSampleRate = 16_000.0
     private let uploadChannelCount: AVAudioChannelCount = 1
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", forceHTTP2: Bool = false) {
+    init(
+        apiKey: String,
+        baseURL: String = "https://api.groq.com/openai/v1",
+        transcriptionModel: String = "whisper-large-v3"
+    ) throws {
         self.apiKey = apiKey
-        self.baseURL = baseURL
-        self.forceHTTP2 = forceHTTP2
+        self.baseURL = try Self.normalizedBaseURL(from: baseURL)
+        let trimmedModel = transcriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.transcriptionModel = trimmedModel.isEmpty ? "whisper-large-v3" : trimmedModel
     }
 
     // Validate API key by hitting a lightweight endpoint
     static func validateAPIKey(_ key: String, baseURL: String = "https://api.groq.com/openai/v1") async -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        guard let baseURL = try? normalizedBaseURL(from: baseURL) else { return false }
 
-        var request = URLRequest(url: URL(string: "\(baseURL)/models")!)
+        var request = URLRequest(url: baseURL.appendingPathComponent("models"))
+        request.timeoutInterval = 10
         request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
 
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await LLMAPITransport.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             return status == 200
         } catch {
@@ -38,24 +45,14 @@ class TranscriptionService {
 
     // Upload audio file, submit for transcription, poll until done, return text
     func transcribe(fileURL: URL) async throws -> String {
-        return try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask { [weak self] in
-                guard let self else {
-                    throw TranscriptionError.submissionFailed("Service deallocated")
-                }
-                return try await self.transcribeAudio(fileURL: fileURL)
-            }
+        guard !Task.isCancelled else {
+            throw CancellationError()
+        }
 
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(self.transcriptionTimeoutSeconds * 1_000_000_000))
-                throw TranscriptionError.transcriptionTimedOut(self.transcriptionTimeoutSeconds)
-            }
-
-            guard let result = try await group.next() else {
-                throw TranscriptionError.submissionFailed("No transcription result")
-            }
-            group.cancelAll()
-            return result
+        do {
+            return try await transcribeAudio(fileURL: fileURL)
+        } catch let urlError as URLError where urlError.code == .timedOut {
+            throw TranscriptionError.transcriptionTimedOut(transcriptionTimeoutSeconds)
         }
     }
 
@@ -64,16 +61,16 @@ class TranscriptionService {
         let preparedAudio = try prepareAudioForUpload(from: fileURL)
         defer { preparedAudio.cleanup() }
 
-        if forceHTTP2 {
-            return try await transcribeAudioWithCurl(fileURL: preparedAudio.fileURL)
-        }
         return try await transcribeAudioWithURLSession(fileURL: preparedAudio.fileURL)
     }
 
     private func transcribeAudioWithURLSession(fileURL: URL) async throws -> String {
-        let url = URL(string: "\(baseURL)/audio/transcriptions")!
+        let url = baseURL
+            .appendingPathComponent("audio")
+            .appendingPathComponent("transcriptions")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = transcriptionTimeoutSeconds
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -83,21 +80,20 @@ class TranscriptionService {
             audioData: audioData,
             fileName: fileURL.lastPathComponent,
             model: transcriptionModel,
+            responseFormat: transcriptionResponseFormat,
             boundary: boundary
         )
 
-        let data: Data
-        let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.upload(for: request, from: body)
+            let (data, response) = try await LLMAPITransport.upload(for: request, from: body)
+            return try validateTranscriptionResponse(data: data, response: response, fileURL: fileURL)
         } catch {
             let nsError = error as NSError
             os_log(
                 .error,
                 log: transcriptionLog,
-                "URLSession upload failed for %{public}@ (transport=%{public}@, bytes=%{public}lld): domain=%{public}@ code=%ld desc=%{public}@",
+                "URLSession upload failed for %{public}@ (bytes=%{public}lld): domain=%{public}@ code=%ld desc=%{public}@",
                 fileURL.lastPathComponent,
-                "urlsession-default",
                 fileSizeBytes(for: fileURL),
                 nsError.domain,
                 nsError.code,
@@ -105,7 +101,9 @@ class TranscriptionService {
             )
             throw error
         }
+    }
 
+    private func validateTranscriptionResponse(data: Data, response: URLResponse, fileURL: URL) throws -> String {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TranscriptionError.submissionFailed("No response from server")
         }
@@ -115,10 +113,9 @@ class TranscriptionService {
             os_log(
                 .error,
                 log: transcriptionLog,
-                "URLSession upload returned HTTP %ld for %{public}@ (transport=%{public}@, bytes=%{public}lld)",
+                "URLSession upload returned HTTP %ld for %{public}@ (bytes=%{public}lld)",
                 httpResponse.statusCode,
                 fileURL.lastPathComponent,
-                "urlsession-default",
                 fileSizeBytes(for: fileURL)
             )
             throw TranscriptionError.submissionFailed("Status \(httpResponse.statusCode): \(responseBody)")
@@ -126,56 +123,6 @@ class TranscriptionService {
 
         return try parseTranscript(from: data)
     }
-
-    private func transcribeAudioWithCurl(fileURL: URL) async throws -> String {
-        try await Task.detached(priority: .userInitiated) { [apiKey, transcriptionModel] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-            process.arguments = [
-                "--silent",
-                "--show-error",
-                "--fail",
-                "--http2",
-                "--max-time", String(Int(self.transcriptionTimeoutSeconds)),
-                "\(self.baseURL)/audio/transcriptions",
-                "-H", "Authorization: Bearer \(apiKey)",
-                "-F", "model=\(transcriptionModel)",
-                "-F", "file=@\(fileURL.path);type=\(self.audioContentType(for: fileURL.lastPathComponent))"
-            ]
-
-            let stdout = Pipe()
-            let stderr = Pipe()
-            process.standardOutput = stdout
-            process.standardError = stderr
-
-            try process.run()
-            process.waitUntilExit()
-
-            let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-            let errorText = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-            guard process.terminationStatus == 0 else {
-                os_log(
-                    .error,
-                    log: transcriptionLog,
-                    "curl upload failed for %{public}@ (transport=%{public}@, bytes=%{public}lld): exit=%d%{public}@",
-                    fileURL.lastPathComponent,
-                    "http2-curl",
-                    self.fileSizeBytes(for: fileURL),
-                    process.terminationStatus,
-                    errorText.isEmpty ? "" : " stderr=\(errorText)"
-                )
-                throw TranscriptionError.submissionFailed(
-                    "curl transport failed with exit \(process.terminationStatus): \(errorText)"
-                )
-            }
-
-            return try self.parseTranscript(from: outputData)
-        }.value
-    }
-
     private func audioContentType(for fileName: String) -> String {
         if fileName.lowercased().hasSuffix(".wav") {
             return "audio/wav"
@@ -194,7 +141,13 @@ class TranscriptionService {
         return (attributes?[.size] as? NSNumber)?.int64Value ?? -1
     }
 
-    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String) -> Data {
+    private func makeMultipartBody(
+        audioData: Data,
+        fileName: String,
+        model: String,
+        responseFormat: String,
+        boundary: String
+    ) -> Data {
         var body = Data()
 
         func append(_ value: String) {
@@ -204,6 +157,10 @@ class TranscriptionService {
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(model)\r\n")
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
+        append("\(responseFormat)\r\n")
 
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
@@ -240,9 +197,65 @@ class TranscriptionService {
             && format.commonFormat == .pcmFormatInt16
     }
 
+    private static func normalizedBaseURL(from baseURL: String) throws -> URL {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw TranscriptionError.invalidBaseURL("Provider URL is empty.")
+        }
+
+        guard var components = URLComponents(string: trimmed) else {
+            throw TranscriptionError.invalidBaseURL("Provider URL is malformed.")
+        }
+
+        guard let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            throw TranscriptionError.invalidBaseURL("Provider URL must use http or https.")
+        }
+
+        guard let host = components.host, !host.isEmpty else {
+            throw TranscriptionError.invalidBaseURL("Provider URL must include a host.")
+        }
+
+        components.scheme = scheme
+        if components.path == "/" {
+            components.path = ""
+        } else {
+            components.path = components.path.replacingOccurrences(
+                of: "/+$",
+                with: "",
+                options: .regularExpression
+            )
+        }
+
+        guard let normalizedURL = components.url else {
+            throw TranscriptionError.invalidBaseURL("Provider URL is malformed.")
+        }
+
+        return normalizedURL
+    }
+
+    // Whisper-large-v3 hallucinates common short phrases on silence/background
+    // noise. Drop them when whisper itself reports a high no_speech_prob.
+    // Add a new (phrase, minNoSpeechProb) pair here to filter more hallucinations.
+    //
+    // Thresholds tuned on ~500 samples from quiet and noisy environments, including
+    // both positive cases (real "thank you" speech) and empty-audio cases. Kept
+    // conservative to minimize false positives (filtering real user speech).
+    // Normal speech included audios have very low no_speech_prob.
+    private let hallucinationPhrases = [
+        "thank you",
+        "thank you very much",
+        "thank you so much",
+        "you"
+    ]
+
+    private let hallucinationNoSpeechThreshold = 0.1
+
     private func parseTranscript(from data: Data) throws -> String {
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let text = json["text"] as? String {
+            if isHallucination(text: text, json: json) {
+                return ""
+            }
             return text
         }
 
@@ -257,9 +270,40 @@ class TranscriptionService {
 
         return text
     }
+
+    private func isHallucination(text: String, json: [String: Any]) -> Bool {
+        let normalized = text
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines))
+        guard hallucinationPhrases.contains(normalized) else {
+            return false
+        }
+
+        guard let segments = json["segments"] as? [[String: Any]] else {
+            os_log(
+                .info,
+                log: transcriptionLog,
+                "Skipping hallucination filter for '%{public}@': provider response has no segments/no_speech metadata",
+                normalized
+            )
+            return false
+        }
+
+        guard let noSpeechProb = segments.first?["no_speech_prob"] as? Double else {
+            os_log(
+                .info,
+                log: transcriptionLog,
+                "Skipping hallucination filter for '%{public}@': provider response omitted no_speech_prob",
+                normalized
+            )
+            return false
+        }
+        return noSpeechProb >= hallucinationNoSpeechThreshold
+    }
 }
 
 enum TranscriptionError: LocalizedError {
+    case invalidBaseURL(String)
     case uploadFailed(String)
     case submissionFailed(String)
     case transcriptionFailed(String)
@@ -269,6 +313,7 @@ enum TranscriptionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .invalidBaseURL(let msg): return "Invalid provider URL: \(msg)"
         case .uploadFailed(let msg): return "Upload failed: \(msg)"
         case .submissionFailed(let msg): return "Submission failed: \(msg)"
         case .transcriptionTimedOut(let seconds): return "Transcription timed out after \(Int(seconds))s"

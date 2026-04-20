@@ -2,6 +2,13 @@ import Foundation
 import ApplicationServices
 import AppKit
 
+struct AppSelectionSnapshot {
+    let appName: String?
+    let bundleIdentifier: String?
+    let windowTitle: String?
+    let selectedText: String?
+}
+
 struct AppContext {
     let appName: String?
     let bundleIdentifier: String?
@@ -31,16 +38,42 @@ Return only two sentences, no labels, no markdown, no extra commentary.
     private let apiKey: String
     private let baseURL: String
     private let customContextPrompt: String
-    private let fallbackTextModel = "meta-llama/llama-4-scout-17b-16e-instruct"
-    private let visionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let contextModel: String
     private let maxScreenshotDataURILength = 500_000
     private let screenshotCompressionPrimary = 0.5
     private let screenshotMaxDimension: CGFloat = 1024
+    private let contextRequestTimeoutSeconds: TimeInterval = 20
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", customContextPrompt: String = "") {
+    init(
+        apiKey: String,
+        baseURL: String = "https://api.groq.com/openai/v1",
+        customContextPrompt: String = "",
+        contextModel: String = "meta-llama/llama-4-scout-17b-16e-instruct"
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.customContextPrompt = customContextPrompt
+        let trimmedModel = contextModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.contextModel = trimmedModel.isEmpty ? "meta-llama/llama-4-scout-17b-16e-instruct" : trimmedModel
+    }
+
+    func collectSelectionSnapshot() -> AppSelectionSnapshot {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            return AppSelectionSnapshot(
+                appName: nil,
+                bundleIdentifier: nil,
+                windowTitle: nil,
+                selectedText: nil
+            )
+        }
+
+        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+        return AppSelectionSnapshot(
+            appName: frontmostApp.localizedName,
+            bundleIdentifier: frontmostApp.bundleIdentifier,
+            windowTitle: focusedWindowTitle(from: appElement) ?? frontmostApp.localizedName,
+            selectedText: rawSelectedText(from: appElement)
+        )
     }
 
     func collectContext(captureScreenshot: Bool = true) async -> AppContext {
@@ -127,20 +160,26 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         selectedText: String?,
         screenshotDataURL: String?
     ) async -> (activity: String, prompt: String)? {
-        let modelsToTry = [
-            screenshotDataURL != nil ? visionModel : fallbackTextModel,
-            fallbackTextModel
-        ]
+        let attempts: [(model: String, screenshotDataURL: String?)] =
+            if let screenshotDataURL {
+                [
+                    (contextModel, screenshotDataURL),
+                    (contextModel, nil)
+                ]
+            } else {
+                [
+                    (contextModel, nil)
+                ]
+            }
 
-        for model in modelsToTry {
-            let screenshotPayload = model == visionModel ? screenshotDataURL : nil
+        for attempt in attempts {
             if let inferred = await inferActivityWithLLM(
                 appName: appName,
                 bundleIdentifier: bundleIdentifier,
                 windowTitle: windowTitle,
                 selectedText: selectedText,
-                screenshotDataURL: screenshotPayload,
-                model: model
+                screenshotDataURL: attempt.screenshotDataURL,
+                model: attempt.model
             ) {
                 return inferred
             }
@@ -160,6 +199,7 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         do {
             var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
             request.httpMethod = "POST"
+            request.timeoutInterval = contextRequestTimeoutSeconds
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
@@ -210,7 +250,7 @@ Selected text: \(selectedText ?? "None")
             ]
 
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await LLMAPITransport.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 return nil
             }
@@ -286,6 +326,19 @@ Selected text: \(selectedText ?? "None")
         return nil
     }
 
+    private func rawSelectedText(from appElement: AXUIElement) -> String? {
+        if let focusedElement = accessibilityElement(from: appElement, attribute: kAXFocusedUIElementAttribute as CFString),
+           let selectedText = accessibilityRawString(from: focusedElement, attribute: kAXSelectedTextAttribute as CFString) {
+            return selectedText
+        }
+
+        if let selectedText = accessibilityRawString(from: appElement, attribute: kAXSelectedTextAttribute as CFString) {
+            return selectedText
+        }
+
+        return nil
+    }
+
     private func accessibilityElement(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
@@ -302,6 +355,13 @@ Selected text: \(selectedText ?? "None")
         let result = AXUIElementCopyAttributeValue(element, attribute, &value)
         guard result == .success, let stringValue = value as? String else { return nil }
         return trimmedText(stringValue)
+    }
+
+    private func accessibilityRawString(from element: AXUIElement, attribute: CFString) -> String? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard result == .success, let stringValue = value as? String else { return nil }
+        return stringValue.isEmpty ? nil : stringValue
     }
 
     private func accessibilityPoint(from element: AXUIElement, attribute: CFString) -> CGPoint? {
