@@ -998,23 +998,6 @@ struct GeneralSettingsView: View {
                 }
             )
 
-            Divider()
-
-            Toggle("Capture screenshots for context", isOn: $appState.screenshotEnabled)
-            Text("When enabled, FreeFlow captures a screenshot of the active window to improve transcription accuracy. Disable to keep your screen contents private.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if appState.screenshotEnabled {
-                permissionRow(
-                    title: "Screen Recording",
-                    icon: "camera.viewfinder",
-                    granted: appState.hasScreenRecordingPermission,
-                    action: {
-                        appState.requestScreenCapturePermission()
-                    }
-                )
-            }
         }
     }
 
@@ -1319,10 +1302,7 @@ struct PromptsSettingsView: View {
             windowTitle: "System Prompt Test",
             selectedText: nil,
             currentActivity: "User is testing the system prompt in FreeFlow settings.",
-            contextPrompt: nil,
-            screenshotDataURL: nil,
-            screenshotMimeType: nil,
-            screenshotError: nil
+            contextPrompt: nil
         )
 
         Task {
@@ -1728,15 +1708,6 @@ struct RunLogEntryView: View {
                             title: "Capture Context",
                             content: {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    if let dataURL = item.contextScreenshotDataURL,
-                                       let image = imageFromDataURL(dataURL) {
-                                        Image(nsImage: image)
-                                            .resizable()
-                                            .aspectRatio(contentMode: .fit)
-                                            .frame(maxHeight: 120)
-                                            .cornerRadius(4)
-                                    }
-
                                     if let prompt = item.contextPrompt, !prompt.isEmpty {
                                         Button {
                                             showContextPrompt.toggle()

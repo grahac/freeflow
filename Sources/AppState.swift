@@ -179,7 +179,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let customContextPromptStorageKey = "custom_context_prompt"
     private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
     private let customContextPromptLastModifiedStorageKey = "custom_context_prompt_last_modified"
-    private let screenshotEnabledStorageKey = "screenshot_enabled"
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let alertSoundsEnabledStorageKey = "alert_sounds_enabled"
@@ -367,14 +366,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var lastPostProcessingPrompt = ""
     @Published var lastContextSummary = ""
     @Published var lastPostProcessingStatus = ""
-    @Published var lastContextScreenshotDataURL: String? = nil
-    @Published var lastContextScreenshotStatus = "No screenshot"
     @Published var hasScreenRecordingPermission = false
-    @Published var screenshotEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(screenshotEnabled, forKey: screenshotEnabledStorageKey)
-        }
-    }
     @Published var launchAtLogin: Bool {
         didSet { setLaunchAtLogin(launchAtLogin) }
     }
@@ -399,7 +391,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var contextService: AppContextService
     private var contextCaptureTask: Task<AppContext?, Never>?
     private var capturedContext: AppContext?
-    private var hasShownScreenshotPermissionAlert = false
     private var audioDeviceObservers: [NSObjectProtocol] = []
     private var needsMicrophoneRefreshAfterRecording = false
     private let pipelineHistoryStore = PipelineHistoryStore()
@@ -436,7 +427,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
         let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
         let customContextPromptLastModified = UserDefaults.standard.string(forKey: customContextPromptLastModifiedStorageKey) ?? ""
-        let screenshotEnabled = UserDefaults.standard.object(forKey: "screenshot_enabled") as? Bool ?? true
         let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
         let isCommandModeEnabled = UserDefaults.standard.object(forKey: commandModeEnabledStorageKey) == nil
             ? false
@@ -512,7 +502,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.hasScreenRecordingPermission = initialScreenCapturePermission
-        self.screenshotEnabled = screenshotEnabled
         self.launchAtLogin = SMAppService.mainApp.status == .enabled
         self.selectedMicrophoneID = selectedMicrophoneID
         self.precomputeMacros()
@@ -703,10 +692,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             windowTitle: nil,
             selectedText: nil,
             currentActivity: item.contextSummary,
-            contextPrompt: item.contextPrompt,
-            screenshotDataURL: item.contextScreenshotDataURL,
-            screenshotMimeType: item.contextScreenshotDataURL != nil ? "image/jpeg" : nil,
-            screenshotError: nil
+            contextPrompt: item.contextPrompt
         )
 
         let postProcessingService = PostProcessingService(
@@ -1675,8 +1661,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
         lastContextSummary = ""
         lastPostProcessingStatus = ""
         lastPostProcessingPrompt = ""
-        lastContextScreenshotDataURL = nil
-        lastContextScreenshotStatus = "No screenshot"
         isRecording = false
         isTranscribing = true
         statusText = "Preparing audio..."
@@ -1757,9 +1741,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     await MainActor.run {
                         guard self.isTranscribing else { return }
                         self.lastContextSummary = appContext.contextSummary
-                        self.lastContextScreenshotDataURL = appContext.screenshotDataURL
-                        self.lastContextScreenshotStatus = appContext.screenshotError
-                            ?? "available (\(appContext.screenshotMimeType ?? "image"))"
                         let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                         let trimmedFinalTranscript = result.finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                         let processingStatus = result.outcome.statusMessage()
@@ -1845,9 +1826,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.lastContextSummary = ""
                         self.lastPostProcessingStatus = "Error: \(error.localizedDescription)"
                         self.lastPostProcessingPrompt = ""
-                        self.lastContextScreenshotDataURL = resolvedContext.screenshotDataURL
-                        self.lastContextScreenshotStatus = resolvedContext.screenshotError
-                            ?? "available (\(resolvedContext.screenshotMimeType ?? "image"))"
                         self.recordPipelineHistoryEntry(
                             rawTranscript: "",
                             postProcessedTranscript: "",
@@ -1907,20 +1885,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         capturedContext = nil
         lastContextSummary = "Collecting app context..."
         lastPostProcessingStatus = ""
-        lastContextScreenshotDataURL = nil
-        lastContextScreenshotStatus = "Collecting screenshot..."
-
         contextCaptureTask = Task { [weak self] in
             guard let self else { return nil }
-            let context = await self.contextService.collectContext(captureScreenshot: self.screenshotEnabled)
+            let context = await self.contextService.collectContext()
             await MainActor.run {
                 self.capturedContext = context
                 self.lastContextSummary = context.contextSummary
-                self.lastContextScreenshotDataURL = context.screenshotDataURL
-                self.lastContextScreenshotStatus = context.screenshotError
-                    ?? "available (\(context.screenshotMimeType ?? "image"))"
                 self.lastPostProcessingStatus = "App context captured"
-                self.handleScreenshotCaptureIssue(context.screenshotError)
             }
             return context
         }
@@ -1935,10 +1906,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             windowTitle: windowTitle,
             selectedText: nil,
             currentActivity: "Could not refresh app context at stop time; using text-only post-processing.",
-            contextPrompt: nil,
-            screenshotDataURL: nil,
-            screenshotMimeType: nil,
-            screenshotError: "No app context captured before stop"
+            contextPrompt: nil
         )
     }
 
@@ -1983,48 +1951,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\n", with: " ")
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func handleScreenshotCaptureIssue(_ message: String?) {
-        guard let message, !message.isEmpty else { return }
-        os_log(.error, "Screenshot capture issue: %{public}@", message)
-
-        if isScreenCapturePermissionError(message) && !hasShownScreenshotPermissionAlert {
-            hasShownScreenshotPermissionAlert = true
-
-            // Permission errors are fatal — stop recording
-            audioRecorder.cancelRecording()
-            audioLevelCancellable?.cancel()
-            audioLevelCancellable = nil
-            contextCaptureTask?.cancel()
-            contextCaptureTask = nil
-            capturedContext = nil
-            isRecording = false
-            shortcutSessionController.reset()
-            activeRecordingTriggerMode = nil
-            statusText = "Screenshot Required"
-            overlayManager.dismiss()
-
-            playAlertSound(named: "Basso")
-            showScreenshotPermissionAlert(message: message)
-        }
-        // Non-permission errors (transient failures) — continue recording without context
-    }
-
-    private func isScreenCapturePermissionError(_ message: String) -> Bool {
-        let lowered = message.lowercased()
-        return lowered.contains("permission") || lowered.contains("screen recording")
-    }
-
-
-    private func showScreenshotCaptureErrorAlert(message: String) {
-        let alert = NSAlert()
-        alert.messageText = "Screenshot Capture Failed"
-        alert.informativeText = "\(message)\n\nA screenshot is required for context-aware transcription. Recording has been stopped."
-        alert.alertStyle = .critical
-        alert.addButton(withTitle: "Dismiss")
-        alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
-        _ = alert.runModal()
     }
 
     func toggleDebugOverlay() {
@@ -2127,21 +2053,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let pasteboard = NSPasteboard.general
             guard pasteboard.changeCount == pendingRestore.expectedChangeCount else { return }
             pendingRestore.snapshot.restore(to: pasteboard)
-        }
-    }
-
-    private func pasteAtCursorWhenShortcutReleased(attempt: Int = 0, completion: (() -> Void)? = nil) {
-        let maxAttempts = 24
-        if hotkeyManager.hasPressedShortcutInputs && attempt < maxAttempts {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
-                self?.pasteAtCursorWhenShortcutReleased(attempt: attempt + 1, completion: completion)
-            }
-            return
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-            self?.pasteAtCursor()
-            completion?()
         }
     }
 

@@ -12,8 +12,6 @@ struct PipelineDebugPanelView: View {
                 statusMessage: appState.debugStatusMessage,
                 postProcessingStatus: appState.lastPostProcessingStatus,
                 contextSummary: appState.lastContextSummary,
-                contextScreenshotStatus: appState.lastContextScreenshotStatus,
-                contextScreenshotDataURL: appState.lastContextScreenshotDataURL,
                 rawTranscript: appState.lastRawTranscript,
                 postProcessedTranscript: appState.lastPostProcessedTranscript,
                 postProcessingPrompt: appState.lastPostProcessingPrompt
