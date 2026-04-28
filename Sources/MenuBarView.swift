@@ -10,7 +10,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("FreeFlow v\(appVersion)")
+            Text("\(AppName.displayName) v\(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
@@ -62,6 +62,15 @@ struct MenuBarView: View {
                 appState.toggleRecording()
             }
             .disabled(appState.isTranscribing)
+
+            if let hotkeyError = appState.hotkeyMonitoringErrorMessage {
+                Divider()
+                Text(hotkeyError)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .padding(.horizontal, 16)
+                    .lineLimit(3)
+            }
 
             if let error = appState.errorMessage {
                 Divider()
@@ -253,7 +262,7 @@ struct MenuBarView: View {
                     Button {
                         updateManager.showUpdateAlert()
                     } label: {
-                        Label("Update Available", systemImage: "arrow.down.circle.fill")
+                        Label("Update available", systemImage: "arrow.down.circle.fill")
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.white)
@@ -267,16 +276,11 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quit FreeFlow") {
+            Button("Quit \(AppName.displayName)") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
         }
         .padding(4)
     }
-}
-
-extension Notification.Name {
-    static let showSetup = Notification.Name("showSetup")
-    static let showSettings = Notification.Name("showSettings")
 }

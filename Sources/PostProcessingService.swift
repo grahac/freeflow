@@ -141,7 +141,8 @@ Behavior:
         transcript: String,
         context: AppContext,
         customVocabulary: String,
-        customSystemPrompt: String = ""
+        customSystemPrompt: String = "",
+        outputLanguage: String = ""
     ) async throws -> PostProcessingResult {
         let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
 
@@ -155,7 +156,8 @@ Behavior:
                     transcript: transcript,
                     contextSummary: context.contextSummary,
                     customVocabulary: vocabularyTerms,
-                    customSystemPrompt: customSystemPrompt
+                    customSystemPrompt: customSystemPrompt,
+                    outputLanguage: outputLanguage
                 )
             }
 
@@ -181,7 +183,8 @@ Behavior:
         selectedText: String,
         voiceCommand: String,
         context: AppContext,
-        customVocabulary: String
+        customVocabulary: String,
+        outputLanguage: String = ""
     ) async throws -> PostProcessingResult {
         let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
         let trimmedSelectedText = selectedText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -203,7 +206,8 @@ Behavior:
                     selectedText: selectedText,
                     voiceCommand: voiceCommand,
                     contextSummary: context.contextSummary,
-                    customVocabulary: vocabularyTerms
+                    customVocabulary: vocabularyTerms,
+                    outputLanguage: outputLanguage
                 )
             }
 
@@ -229,7 +233,8 @@ Behavior:
         transcript: String,
         contextSummary: String,
         customVocabulary: [String],
-        customSystemPrompt: String = ""
+        customSystemPrompt: String = "",
+        outputLanguage: String = ""
     ) async throws -> PostProcessingResult {
         let primaryModel = resolvedPrimaryModel()
         let retryModel = resolvedRetryModel(for: primaryModel)
@@ -239,7 +244,8 @@ Behavior:
                 contextSummary: contextSummary,
                 model: primaryModel,
                 customVocabulary: customVocabulary,
-                customSystemPrompt: customSystemPrompt
+                customSystemPrompt: customSystemPrompt,
+                outputLanguage: outputLanguage
             )
         } catch let error as PostProcessingError {
             let shouldFallback: Bool
@@ -265,7 +271,8 @@ Behavior:
                 contextSummary: contextSummary,
                 model: retryModel,
                 customVocabulary: customVocabulary,
-                customSystemPrompt: customSystemPrompt
+                customSystemPrompt: customSystemPrompt,
+                outputLanguage: outputLanguage
             )
         }
     }
@@ -274,7 +281,8 @@ Behavior:
         selectedText: String,
         voiceCommand: String,
         contextSummary: String,
-        customVocabulary: [String]
+        customVocabulary: [String],
+        outputLanguage: String = ""
     ) async throws -> PostProcessingResult {
         let primaryModel = resolvedPrimaryModel()
         let retryModel = resolvedRetryModel(for: primaryModel)
@@ -284,7 +292,8 @@ Behavior:
                 voiceCommand: voiceCommand,
                 contextSummary: contextSummary,
                 model: primaryModel,
-                customVocabulary: customVocabulary
+                customVocabulary: customVocabulary,
+                outputLanguage: outputLanguage
             )
         } catch let error as PostProcessingError {
             let shouldFallback: Bool
@@ -310,7 +319,8 @@ Behavior:
                 voiceCommand: voiceCommand,
                 contextSummary: contextSummary,
                 model: retryModel,
-                customVocabulary: customVocabulary
+                customVocabulary: customVocabulary,
+                outputLanguage: outputLanguage
             )
         }
     }
@@ -337,7 +347,8 @@ Behavior:
         contextSummary: String,
         model: String,
         customVocabulary: [String],
-        customSystemPrompt: String = ""
+        customSystemPrompt: String = "",
+        outputLanguage: String = ""
     ) async throws -> PostProcessingResult {
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
         request.httpMethod = "POST"
@@ -364,6 +375,10 @@ These terms are ONLY for correcting Whisper misspellings of a word the speaker C
         var systemPrompt = customSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? Self.defaultSystemPrompt
             : customSystemPrompt
+        let trimmedOutputLanguage = outputLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedOutputLanguage.isEmpty {
+            systemPrompt = Self.applyOutputLanguage(systemPrompt, language: trimmedOutputLanguage)
+        }
         if !vocabularyPrompt.isEmpty {
             systemPrompt += "\n\n" + vocabularyPrompt
         }
@@ -442,7 +457,8 @@ Model: \(model)
         voiceCommand: String,
         contextSummary: String,
         model: String,
-        customVocabulary: [String]
+        customVocabulary: [String],
+        outputLanguage: String = ""
     ) async throws -> PostProcessingResult {
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
         request.httpMethod = "POST"
@@ -462,6 +478,13 @@ Use these spellings exactly in the output when relevant:
         }
 
         var systemPrompt = Self.commandModeSystemPrompt
+        let trimmedOutputLanguage = outputLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedOutputLanguage.isEmpty {
+            systemPrompt = systemPrompt.replacingOccurrences(
+                of: "- Preserve the original language unless VOICE_COMMAND explicitly requests translation.",
+                with: "- Output the result in \(trimmedOutputLanguage)."
+            )
+        }
         if !vocabularyPrompt.isEmpty {
             systemPrompt += "\n\n" + vocabularyPrompt
         }
@@ -535,6 +558,10 @@ Model: \(model)
             transcript: sanitizedTranscript,
             prompt: promptForDisplay
         )
+    }
+
+    static func applyOutputLanguage(_ prompt: String, language: String) -> String {
+        prompt + "\n\nIMPORTANT: Translate the final cleaned text into \(language). Output ONLY in \(language), regardless of the original spoken language."
     }
 
     private func sanitizePostProcessedTranscript(_ value: String) -> String {

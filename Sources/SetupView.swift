@@ -7,13 +7,15 @@ import ServiceManagement
 private struct SetupProviderSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var apiBaseURLInput: String
+    @Binding var transcriptionAPIURLInput: String
+    @Binding var transcriptionAPIKeyInput: String
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Advanced Provider Settings")
                     .font(.title2.weight(.semibold))
-                Text("Use these fields when pointing FreeFlow at another OpenAI-compatible provider or when you need custom model IDs.")
+                Text("Use these fields when pointing \(AppName.displayName) at another OpenAI-compatible provider or when you need custom model IDs.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -26,6 +28,8 @@ private struct SetupProviderSettingsSheet: View {
             ScrollView {
                 ProviderSettingsFields(
                     apiBaseURLInput: $apiBaseURLInput,
+                    transcriptionAPIURLInput: $transcriptionAPIURLInput,
+                    transcriptionAPIKeyInput: $transcriptionAPIKeyInput,
                     showsModelDescription: true
                 )
                 .padding(20)
@@ -71,6 +75,8 @@ struct SetupView: View {
     @State private var accessibilityGranted = false
     @State private var apiKeyInput: String = ""
     @State private var apiBaseURLInput: String = ""
+    @State private var transcriptionAPIURLInput: String = ""
+    @State private var transcriptionAPIKeyInput: String = ""
     @State private var isValidatingKey = false
     @State private var keyValidationError: String?
     @State private var showingProviderSettingsSheet = false
@@ -185,6 +191,8 @@ struct SetupView: View {
         .onAppear {
             apiKeyInput = appState.apiKey
             apiBaseURLInput = appState.apiBaseURL
+            transcriptionAPIURLInput = appState.transcriptionAPIURL
+            transcriptionAPIKeyInput = appState.transcriptionAPIKey
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
@@ -197,7 +205,11 @@ struct SetupView: View {
             appState.resumeHotkeyMonitoringAfterShortcutCapture()
         }
         .sheet(isPresented: $showingProviderSettingsSheet) {
-            SetupProviderSettingsSheet(apiBaseURLInput: $apiBaseURLInput)
+            SetupProviderSettingsSheet(
+                apiBaseURLInput: $apiBaseURLInput,
+                transcriptionAPIURLInput: $transcriptionAPIURLInput,
+                transcriptionAPIKeyInput: $transcriptionAPIKeyInput
+            )
                 .environmentObject(appState)
         }
         .onChange(of: isCapturingShortcut) { isCapturing in
@@ -247,7 +259,7 @@ struct SetupView: View {
                 .frame(width: 90, height: 90)
 
             VStack(spacing: 4) {
-                Text("Welcome to FreeFlow")
+                Text("Welcome to \(AppName.displayName)")
                     .font(.system(size: 26, weight: .bold, design: .rounded))
 
                 Text("Dictate text anywhere on your Mac.\nHold to talk or tap to toggle dictation.")
@@ -503,7 +515,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow needs access to your microphone to record audio for transcription.")
+            Text("\(AppName.displayName) needs access to your microphone to record audio for transcription.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -542,7 +554,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow needs Accessibility access to paste transcribed text into your apps.")
+            Text("\(AppName.displayName) needs Accessibility access to paste transcribed text into your apps.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -567,13 +579,6 @@ struct SetupView: View {
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
-
-            if !accessibilityGranted {
-                Text("Note: If you rebuilt the app, you may need to\nremove and re-add it in Accessibility settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
 
         }
         .onAppear {
@@ -630,7 +635,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Choose the shortcut you want to tap once to start dictating and tap again to stop.\nIf this shortcut becomes active while you are holding the hold shortcut, FreeFlow latches into tap mode. You can also disable tap-to-toggle entirely.")
+            Text("Choose the shortcut you want to tap once to start dictating and tap again to stop.\nIf this shortcut becomes active while you are holding the hold shortcut, \(AppName.displayName) latches into tap mode. You can also disable tap-to-toggle entirely.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -730,7 +735,7 @@ struct SetupView: View {
                 Group {
                     switch appState.commandModeStyle {
                     case .automatic:
-                        Text("Automatic mode uses your normal dictation shortcut. If text is selected, FreeFlow transforms that selection instead of dictating new text.")
+                        Text("Automatic mode uses your normal dictation shortcut. If text is selected, \(AppName.displayName) transforms that selection instead of dictating new text.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -780,7 +785,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Start FreeFlow automatically when you log in so it's always ready.")
+            Text("Start \(AppName.displayName) automatically when you log in so it's always ready.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -789,7 +794,7 @@ struct SetupView: View {
                 Image(systemName: "sunrise.fill")
                     .frame(width: 24)
                     .foregroundStyle(.blue)
-                Toggle("Launch FreeFlow at login", isOn: $appState.launchAtLogin)
+                Toggle("Launch \(AppName.displayName) at login", isOn: $appState.launchAtLogin)
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
@@ -903,7 +908,7 @@ struct SetupView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Perfect — FreeFlow is ready to go.")
+                            Text("Perfect — \(AppName.displayName) is ready to go.")
                                 .font(.title2)
                                 .fontWeight(.semibold)
 
@@ -947,7 +952,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow lives in your menu bar.")
+            Text("\(AppName.displayName) lives in your menu bar.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
@@ -1086,10 +1091,8 @@ struct SetupView: View {
     }
 
     func requestMicPermission() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            DispatchQueue.main.async {
-                micPermissionGranted = granted
-            }
+        appState.requestMicrophoneAccess { granted in
+            micPermissionGranted = granted
         }
     }
 
@@ -1107,8 +1110,7 @@ struct SetupView: View {
     }
 
     func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+        appState.openAccessibilitySettings()
     }
 
     // MARK: - Test Transcription
@@ -1185,11 +1187,7 @@ struct SetupView: View {
 
                     Task {
                         do {
-                            let service = try TranscriptionService(
-                                apiKey: appState.apiKey,
-                                baseURL: appState.apiBaseURL,
-                                transcriptionModel: appState.transcriptionModel
-                            )
+                            let service = try appState.makeTranscriptionService()
                             let transcript = try await service.transcribe(fileURL: url)
                             await MainActor.run {
                                 testHotkeyHarness.isTranscribing = false
@@ -1220,10 +1218,15 @@ struct SetupView: View {
             }
         }
 
-        testHotkeyHarness.start(configuration: ShortcutConfiguration(
-            hold: appState.holdShortcut,
-            toggle: appState.toggleShortcut
-        ), startDelay: appState.shortcutStartDelay)
+        do {
+            try testHotkeyHarness.start(configuration: ShortcutConfiguration(
+                hold: appState.holdShortcut,
+                toggle: appState.toggleShortcut
+            ), startDelay: appState.shortcutStartDelay)
+        } catch {
+            testError = error.localizedDescription
+            testPhase = .done
+        }
     }
 
     private func stopTestHotkeyMonitoring() {

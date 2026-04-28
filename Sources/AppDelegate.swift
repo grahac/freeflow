@@ -82,7 +82,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "FreeFlow"
+        window.title = AppName.displayName
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()
@@ -103,6 +103,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+
     func showSetupWindow() {
         NSApp.setActivationPolicy(.regular)
 
@@ -117,7 +118,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "FreeFlow"
+        window.title = AppName.displayName
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.contentView = NSHostingView(rootView: setupView)
