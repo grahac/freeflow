@@ -403,14 +403,11 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(SettingsTab.allCases) { tab in
+                ForEach(SettingsTab.visibleCases) { tab in
                     Button {
                         appState.selectedSettingsTab = tab
                     } label: {
-                        Label(tab.title, systemImage: tab.icon)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 10)
+                        SettingsSidebarRow(title: tab.title, icon: tab.icon)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
                                     .fill(appState.selectedSettingsTab == tab
@@ -420,6 +417,7 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                 }
+
                 Spacer()
             }
             .padding(10)
@@ -438,9 +436,76 @@ struct SettingsView: View {
                     VoiceMacrosSettingsView()
                 case .runLog:
                     RunLogView()
+                case .debug:
+                    DebugSettingsView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct SettingsSidebarRow: View {
+    let title: String
+    let icon: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .regular))
+                .frame(width: 16, height: 16, alignment: .center)
+                .foregroundStyle(.primary)
+
+            Text(title)
+                .font(.body)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+    }
+}
+
+// MARK: - Debug Settings
+
+struct DebugSettingsView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Debug")
+                    .font(.largeTitle.bold())
+
+                SettingsCard("Overlay", icon: "wrench.and.screwdriver") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Show the recording overlay with simulated audio levels.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
+                            appState.toggleDebugOverlay()
+                        }
+                    }
+                }
+
+                SettingsCard("Update Overlay", icon: "arrow.down.circle") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Display the update available overlay after dictation finishes.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Toggle("Show after dictation", isOn: $appState.debugShowsUpdateReminderAfterDictation)
+
+                        Button("Show Update Overlay Now") {
+                            appState.showDebugUpdateAvailableOverlay()
+                        }
+                    }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -451,6 +516,7 @@ struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
     @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
+    @AppStorage("use_compact_overlay") private var useCompactOverlay = true
     @State private var apiKeyInput: String = ""
     @State private var apiBaseURLInput: String = ""
     @State private var transcriptionAPIURLInput: String = ""
@@ -584,6 +650,11 @@ struct GeneralSettingsView: View {
                             .buttonStyle(.plain)
                         }
 
+                        ContributorAvatarRow(
+                            contributors: githubCache.forkRecentContributors,
+                            label: "fork contributors"
+                        )
+
                         Divider()
 
                         // Upstream repo row (Zach's)
@@ -646,6 +717,11 @@ struct GeneralSettingsView: View {
                             }
                             .buttonStyle(.plain)
                         }
+
+                        ContributorAvatarRow(
+                            contributors: githubCache.recentContributors,
+                            label: "upstream contributors"
+                        )
 
                         if !githubCache.recentStargazers.isEmpty {
                             Divider()
@@ -711,6 +787,9 @@ struct GeneralSettingsView: View {
                 }
                 SettingsCard("Audio During Dictation", icon: "speaker.slash.fill") {
                     dictationAudioSection
+                }
+                SettingsCard("Recording Overlay", icon: "rectangle.dashed") {
+                    overlaySection
                 }
                 SettingsCard("Edit Mode", icon: "pencil") {
                     commandModeSection
@@ -1099,6 +1178,27 @@ struct GeneralSettingsView: View {
             }
         }
     }
+
+    // MARK: Recording Overlay
+
+    private var overlaySection: some View {
+        VStack(spacing: 10) {
+            OverlayStyleOptionRow(
+                title: "Minimalist menu-bar overlay",
+                subtitle: "Two slim wings flank the camera notch and stay inside the menu bar. Never covers app tabs or toolbars.",
+                isMinimalist: true,
+                selection: $useCompactOverlay
+            )
+            OverlayStyleOptionRow(
+                title: "Drop-down pill",
+                subtitle: "Single pill hangs below the menu bar during recording. Larger and more visible, but covers a thin strip of whatever app is active.",
+                isMinimalist: false,
+                selection: $useCompactOverlay
+            )
+        }
+    }
+
+    // MARK: Audio During Dictation
 
     private var dictationAudioSection: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1907,6 +2007,10 @@ struct RunLogEntryView: View {
     @State private var showPostProcessingPrompt = false
     @State private var copiedTranscript = false
     @State private var copiedTranscriptResetWorkItem: DispatchWorkItem?
+    @State private var copiedRawTranscript = false
+    @State private var copiedRawTranscriptResetWorkItem: DispatchWorkItem?
+    @State private var copiedCleanedTranscript = false
+    @State private var copiedCleanedTranscriptResetWorkItem: DispatchWorkItem?
 
     private var isError: Bool {
         item.postProcessingStatus.hasPrefix("Error:")
@@ -2136,9 +2240,23 @@ struct RunLogEntryView: View {
                                             .font(.system(.caption, design: .monospaced))
                                             .textSelection(.enabled)
                                             .padding(8)
+                                            .padding(.trailing, 24)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .background(Color(nsColor: .controlBackgroundColor))
                                             .cornerRadius(4)
+                                            .overlay(alignment: .topTrailing) {
+                                                Button {
+                                                    copyRawTranscriptToPasteboard()
+                                                } label: {
+                                                    Image(systemName: copiedRawTranscript ? "checkmark" : "doc.on.doc")
+                                                        .font(.caption)
+                                                        .foregroundStyle(copiedRawTranscript ? .green : .secondary)
+                                                        .padding(6)
+                                                        .contentShape(Rectangle())
+                                                }
+                                                .buttonStyle(.plain)
+                                                .help(copiedRawTranscript ? "Copied literal transcript" : "Copy literal transcript")
+                                            }
                                     } else {
                                         Text("(empty transcript)")
                                             .font(.caption)
@@ -2189,9 +2307,23 @@ struct RunLogEntryView: View {
                                             .font(.system(.caption, design: .monospaced))
                                             .textSelection(.enabled)
                                             .padding(8)
+                                            .padding(.trailing, 24)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .background(Color(nsColor: .controlBackgroundColor))
                                             .cornerRadius(4)
+                                            .overlay(alignment: .topTrailing) {
+                                                Button {
+                                                    copyCleanedTranscriptToPasteboard()
+                                                } label: {
+                                                    Image(systemName: copiedCleanedTranscript ? "checkmark" : "doc.on.doc")
+                                                        .font(.caption)
+                                                        .foregroundStyle(copiedCleanedTranscript ? .green : .secondary)
+                                                        .padding(6)
+                                                        .contentShape(Rectangle())
+                                                }
+                                                .buttonStyle(.plain)
+                                                .help(copiedCleanedTranscript ? "Copied cleaned transcript" : "Copy cleaned transcript")
+                                            }
                                     }
                                 }
                             }
@@ -2232,6 +2364,38 @@ struct RunLogEntryView: View {
             copiedTranscriptResetWorkItem = nil
         }
         copiedTranscriptResetWorkItem = resetWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: resetWorkItem)
+    }
+
+    private func copyRawTranscriptToPasteboard() {
+        guard !item.rawTranscript.isEmpty else { return }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.rawTranscript, forType: .string)
+        copiedRawTranscript = true
+
+        copiedRawTranscriptResetWorkItem?.cancel()
+        let resetWorkItem = DispatchWorkItem {
+            copiedRawTranscript = false
+            copiedRawTranscriptResetWorkItem = nil
+        }
+        copiedRawTranscriptResetWorkItem = resetWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: resetWorkItem)
+    }
+
+    private func copyCleanedTranscriptToPasteboard() {
+        guard !item.postProcessedTranscript.isEmpty else { return }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.postProcessedTranscript, forType: .string)
+        copiedCleanedTranscript = true
+
+        copiedCleanedTranscriptResetWorkItem?.cancel()
+        let resetWorkItem = DispatchWorkItem {
+            copiedCleanedTranscript = false
+            copiedCleanedTranscriptResetWorkItem = nil
+        }
+        copiedCleanedTranscriptResetWorkItem = resetWorkItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: resetWorkItem)
     }
 }

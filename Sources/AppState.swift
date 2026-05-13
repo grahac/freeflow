@@ -25,8 +25,15 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case prompts
     case macros
     case runLog
+    case debug
 
     var id: String { rawValue }
+
+    static var visibleCases: [SettingsTab] {
+        allCases.filter { tab in
+            tab != .debug || AppBuild.isDevBundle
+        }
+    }
 
     var title: String {
         switch self {
@@ -34,6 +41,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .prompts: return "Prompts"
         case .macros: return "Voice Macros"
         case .runLog: return "Run Log"
+        case .debug: return "Debug"
         }
     }
 
@@ -43,7 +51,14 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .prompts: return "text.bubble"
         case .macros: return "music.mic"
         case .runLog: return "clock.arrow.circlepath"
+        case .debug: return "wrench.and.screwdriver"
         }
+    }
+}
+
+enum AppBuild {
+    static var isDevBundle: Bool {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String) == "FreeFlow Dev"
     }
 }
 
@@ -495,6 +510,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var selectedSettingsTab: SettingsTab? = .general
     @Published var pipelineHistory: [PipelineHistoryItem] = []
     @Published var debugStatusMessage = "Idle"
+    @Published var debugShowsUpdateReminderAfterDictation = false
     @Published var lastRawTranscript = ""
     @Published var lastPostProcessedTranscript = ""
     @Published var lastPostProcessingPrompt = ""
@@ -540,6 +556,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var pendingShortcutStartTask: Task<Void, Never>?
     private var pendingShortcutStartMode: RecordingTriggerMode?
     private var realtimeService: RealtimeTranscriptionService?
+    private var automaticTerminationDisabled = false
     private var activeAudioInterruption: ActiveAudioInterruption?
     private var pendingOverlayDismissToken: UUID?
     private var shouldMonitorHotkeys = false
@@ -1367,36 +1384,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @discardableResult
     func setCommandModeManualModifier(_ modifier: CommandModeManualModifier) -> String? {
-        if isCommandModeEnabled,
-           commandModeStyle == .manual,
-           let message = commandModeManualModifierCollisionMessage(for: modifier) {
-            return message
-        }
-
+        // Match sibling setters: always commit, then validate.
         commandModeManualModifier = modifier
+        if isCommandModeEnabled, commandModeStyle == .manual {
+            return commandModeManualModifierCollisionMessage(for: modifier)
+        }
         return nil
     }
 
     @discardableResult
     func setShortcut(_ binding: ShortcutBinding, for role: ShortcutRole) -> String? {
         let binding = binding.normalizedForStorageMigration()
-        let nextHoldShortcut = role == .hold ? binding : holdShortcut
-        let nextToggleShortcut = role == .toggle ? binding : toggleShortcut
         let otherBinding = role == .hold ? toggleShortcut : holdShortcut
-        if binding.isDisabled && otherBinding.isDisabled {
-            return "At least one shortcut must remain enabled."
-        }
         guard !binding.conflicts(with: otherBinding) else {
             return "Hold and tap shortcuts must be distinct."
-        }
-        if isCommandModeEnabled,
-           commandModeStyle == .manual,
-           let message = commandModeManualModifierCollisionMessage(
-            for: commandModeManualModifier,
-            holdBinding: nextHoldShortcut,
-            toggleBinding: nextToggleShortcut
-           ) {
-            return message
         }
 
         switch role {
@@ -1429,6 +1430,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         if !toggleBinding.isDisabled && toggleBinding.modifiers.contains(manualModifier) {
             return "That modifier is already part of the tap shortcut."
+        }
+        // Modifier-only bindings carry identity in keyCode, not modifiers.
+        if !holdBinding.isDisabled,
+           holdBinding.kind == .modifierKey,
+           let bindingModifier = ShortcutBinding.modifier(forKeyCode: holdBinding.keyCode),
+           bindingModifier == manualModifier {
+            return "That modifier is already the hold shortcut."
+        }
+        if !toggleBinding.isDisabled,
+           toggleBinding.kind == .modifierKey,
+           let bindingModifier = ShortcutBinding.modifier(forKeyCode: toggleBinding.keyCode),
+           bindingModifier == manualModifier {
+            return "That modifier is already the tap shortcut."
         }
 
         return nil
@@ -1575,6 +1589,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         tearDownRealtimeService()
         audioRecorder.cancelRecording()
         restoreAudioInterruptionIfNeeded()
+        endCriticalDictationActivity()
         refreshAvailableMicrophonesIfNeeded()
         if !isRecording && !isTranscribing && statusText == "Cancelled" {
             scheduleReadyStatusReset(after: 2, matching: ["Cancelled"])
@@ -1603,6 +1618,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             Self.deleteAudioFile(transcribingAudioFileName)
             self.transcribingAudioFileName = nil
         }
+        endCriticalDictationActivity()
         refreshAvailableMicrophonesIfNeeded()
         if !isRecording && !isTranscribing && statusText == "Cancelled" {
             scheduleReadyStatusReset(after: 2, matching: ["Cancelled"])
@@ -1669,6 +1685,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
             return .dictation
         case .manual:
+            // If the binding IS the manual modifier, the "modifier pressed"
+            // signal is the binding's own press. Fall back to plain dictation.
+            let activeBinding: ShortcutBinding = (triggerMode == .toggle) ? toggleShortcut : holdShortcut
+            if activeBinding.kind == .modifierKey,
+               let bindingModifier = ShortcutBinding.modifier(forKeyCode: activeBinding.keyCode),
+               bindingModifier == commandModeManualModifier.shortcutModifier {
+                return .dictation
+            }
             if let message = commandModeManualModifierCollisionMessage(for: commandModeManualModifier) {
                 rejectInvalidCommandModeModifier(triggerMode: triggerMode, message: message)
                 return nil
@@ -1910,8 +1934,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    private func beginCriticalDictationActivity() {
+        guard !automaticTerminationDisabled else { return }
+        ProcessInfo.processInfo.disableAutomaticTermination("FreeFlow dictation in progress")
+        automaticTerminationDisabled = true
+    }
+
+    private func endCriticalDictationActivity() {
+        guard automaticTerminationDisabled else { return }
+        ProcessInfo.processInfo.enableAutomaticTermination("FreeFlow dictation in progress")
+        automaticTerminationDisabled = false
+    }
+
     private func beginRecording(triggerMode: RecordingTriggerMode) {
         os_log(.info, log: recordingLog, "beginRecording() entered")
+        beginCriticalDictationActivity()
         clearPendingOverlayDismissToken()
         errorMessage = nil
 
@@ -2019,6 +2056,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         activeRecordingTriggerMode = nil
         currentSessionIntent = .dictation
         shortcutSessionController.reset()
+        endCriticalDictationActivity()
         errorMessage = formattedRecordingStartError(error)
         statusText = "Error"
         overlayManager.dismiss()
@@ -2279,12 +2317,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         statusText = "Preparing audio..."
         errorMessage = nil
         playAlertSound(named: "Pop")
-        overlayManager.prepareForTranscribing()
+        overlayManager.showTranscribing()
         audioRecorder.stopRecording { [weak self] fileURL in
             guard let self else { return }
             guard let fileURL else {
                 self.isTranscribing = false
                 self.audioRecorder.cleanup()
+                self.endCriticalDictationActivity()
                 self.errorMessage = "No audio recorded"
                 self.statusText = "Error"
                 self.overlayManager.dismiss()
@@ -2305,8 +2344,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             self.statusText = "Transcribing..."
             self.debugStatusMessage = "Transcribing audio"
 
-            self.overlayManager.showTranscribing()
-
         let postProcessingService = PostProcessingService(
             apiKey: apiKey,
             baseURL: apiBaseURL,
@@ -2325,6 +2362,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.transcribingAudioFileName = nil
                 activeRealtime?.cancel()
                 self.audioRecorder.cleanup()
+                self.endCriticalDictationActivity()
                 self.refreshAvailableMicrophonesIfNeeded()
                 return
             }
@@ -2400,6 +2438,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.transcribingAudioFileName = nil
                         self.lastTranscript = trimmedFinalTranscript
                         self.isTranscribing = false
+                        self.endCriticalDictationActivity()
                         self.debugStatusMessage = "Done"
                         let completionStatusText = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
                         let enterOnlyStatusText = "Pressed Enter"
@@ -2453,6 +2492,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 } catch is CancellationError {
                     await MainActor.run {
                         self.transcriptionTask = nil
+                        self.endCriticalDictationActivity()
                     }
                 } catch {
                     let resolvedContext: AppContext
@@ -2469,6 +2509,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.transcribingAudioFileName = nil
                         self.errorMessage = error.localizedDescription
                         self.isTranscribing = false
+                        self.endCriticalDictationActivity()
                         self.statusText = "Error"
                         self.overlayManager.dismiss()
                         self.lastPostProcessedTranscript = ""
@@ -2699,6 +2740,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @MainActor
     private func showPostTranscriptionUpdateReminderIfNeeded() -> Bool {
+        if debugShowsUpdateReminderAfterDictation {
+            showDebugUpdateAvailableOverlay()
+            return true
+        }
+
         let updateManager = UpdateManager.shared
         guard updateManager.shouldShowPostTranscriptionReminder() else { return false }
 
@@ -2714,6 +2760,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         return true
+    }
+
+    @MainActor
+    func showDebugUpdateAvailableOverlay() {
+        let updateManager = UpdateManager.shared
+        let version = updateManager.latestReleaseVersion.isEmpty ? "9.9.9" : updateManager.latestReleaseVersion
+        let dismissToken = UUID()
+        if isDebugOverlayActive || debugOverlayTimer != nil {
+            stopDebugOverlay()
+        }
+        pendingOverlayDismissToken = dismissToken
+        overlayManager.showUpdateAvailable(version: version)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + postTranscriptionUpdateReminderDuration) { [weak self] in
+            guard let self, self.pendingOverlayDismissToken == dismissToken else { return }
+            self.pendingOverlayDismissToken = nil
+            self.overlayManager.dismiss()
+        }
     }
 
     @MainActor
@@ -2802,8 +2866,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let pasteboard = NSPasteboard.general
         let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
 
+        // Append a space when ending with sentence-ending punctuation so the
+        // next dictation does not jam against the prior period.
+        let textToWrite: String
+        if let last = transcript.last, ".!?".contains(last) {
+            textToWrite = transcript + " "
+        } else {
+            textToWrite = transcript
+        }
+
         pasteboard.clearContents()
-        pasteboard.setString(transcript, forType: .string)
+        pasteboard.setString(textToWrite, forType: .string)
 
         guard let snapshot else { return nil }
         return PendingClipboardRestore(snapshot: snapshot, expectedChangeCount: pasteboard.changeCount)
