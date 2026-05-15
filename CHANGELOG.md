@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refreshed dev-build app icons.
 
 ### Fixed
+- Auto-updates now pull from `grahac/freeflow` instead of upstream `zachlatta/freeflow`, so privacy-fork installs no longer revert to the screenshot-capture build on update.
 - Allow both dictation shortcuts to be disabled together.
 - Edit-mode self-collision when a toggle binding overlaps the manual modifier.
 - Hang in "Check for Updates" caused by the alert running off the main thread.
