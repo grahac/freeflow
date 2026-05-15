@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-05-14
+
+### Added
+- Recent transcripts list in the menu bar, with "Copy" and "Copy literal" actions.
+- Debug Settings tab with controls for the debug overlay.
+- Minimalist menu-bar recording overlay (drop-down style, configurable).
+- "Open Run Log" and "Check for Updates" entries in the menu bar.
+- Friendly modifier names in shortcut UI (Cmd ⌘, Right Option ⌥, etc.).
+- Per-repo contributor avatar rows on the welcome and Settings screens for both grahac/freeflow and zachlatta/freeflow.
+
+### Improved
+- Transcribing spinner appears sooner and the recording overlay has cleaner state transitions.
+- Trailing space added automatically after sentence-ending punctuation when pasting.
+- Friendlier one-line messages for transcription submission errors.
+- Setup wizard restores prior app state when closed without completing.
+- App is no longer auto-terminated by macOS mid-dictation.
+- Refreshed dev-build app icons.
+
+### Fixed
+- Allow both dictation shortcuts to be disabled together.
+- Edit-mode self-collision when a toggle binding overlaps the manual modifier.
+- Hang in "Check for Updates" caused by the alert running off the main thread.
+
 ## [Unreleased]
 
 ### Added
