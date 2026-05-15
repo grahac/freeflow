@@ -46,7 +46,7 @@ jobs:
             echo
             echo "## Download"
             echo
-            echo "**[FreeFlow.dmg](https://github.com/zachlatta/freeflow/releases/download/${{ steps.version.outputs.tag }}/FreeFlow.dmg)** — Universal build for all Macs (Apple Silicon + Intel)."
+            echo "**[FreeFlow.dmg](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/FreeFlow.dmg)** — Universal build for all Macs (Apple Silicon + Intel)."
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
