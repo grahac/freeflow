@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-05-22
+
+### Added
+- "Paste Again" keyboard shortcut — bind a key to re-paste your last dictation in a single keypress. Settings adds a third shortcut row alongside Hold to Talk / Tap to Toggle, the setup wizard gets an optional step, and the menu bar dropdown gains a submenu so you can bind it without opening Settings.
+- Dictated text is now marked as transient on the clipboard, so clipboard managers (Maccy, Raycast, Paste, Clipy, Flycut, etc.) skip it instead of polluting your clipboard history with every dictation.
+- DMG install window has a branded background behind the FreeFlow → Applications drag.
+
+### Improved
+- Post-processing now preserves spoken instructions verbatim. Phrases like "write a message to John saying X" used to occasionally get drafted into a message by the LLM; they now transcribe as the literal spoken sentence.
+
+### Fixed
+- Clipboard restore no longer leaves the dictated transcript stranded on the clipboard when browsers, iCloud Universal Clipboard, or background apps bump the pasteboard change count between dictation and restore.
+
 ## [0.4.1] - 2026-05-14
 
 ### Added
