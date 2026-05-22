@@ -97,6 +97,7 @@ dmg: all
 	@echo "Creating DMG..."
 	@create-dmg \
 		--volname "$(APP_NAME)" \
+		--background "Resources/dmg-background.tiff" \
 		--window-pos 200 120 \
 		--window-size 660 400 \
 		--icon-size 128 \
