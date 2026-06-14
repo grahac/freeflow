@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-14
+
+Brings in upstream FreeFlow v1.0.0 and v1.1.0 (minus the screenshot-capture path, which this privacy fork does not ship).
+
+### Added
+- Model picker dropdowns in Settings for transcription, post-processing, fallback, and context models — including Qwen 3 32B and a custom model entry.
+- Recording overlay display picker — show the overlay on the active window, the primary display, or a specific connected monitor.
+- In-pill error notifications so transient network or provider failures are visible without opening the Run Log.
+- Configurable network timeouts via `defaults write com.zachlatta.freeflow <key> -float N` for `transcription_timeout_seconds`, `post_processing_timeout_seconds`, and `context_request_timeout_seconds` — useful for slow or local models.
+
+### Improved
+- Retried dictations now place the successful transcript on the clipboard and update Paste Again.
+- Paste Again preserves the latest raw transcript earlier in the dictation flow, so it survives later cleanup or paste failures.
+- Post-processing handles reasoning-model output more cleanly, including Qwen thinking tags and providerless model aliases.
+
+### Fixed
+- Transcription no longer hangs indefinitely when a provider accepts the connection but never returns a response (added a hard timeout).
+- Duplicate in-pill error notifications are no longer dismissed by an older timer.
+- Permission polling now stops once permissions are granted.
+
 ## [0.4.2] - 2026-05-22
 
 ### Added
