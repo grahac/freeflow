@@ -151,109 +151,57 @@ struct ProviderSettingsFields: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Post-Processing Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultPostProcessingModel, text: $postProcessingModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingPostProcessingModel)
-                        .onSubmit {
-                            commitPostProcessingModel()
-                        }
-                        .onChange(of: isEditingPostProcessingModel) { isEditing in
-                            if !isEditing {
-                                commitPostProcessingModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        postProcessingModelDraft = AppState.defaultPostProcessingModel
-                        appState.postProcessingModel = AppState.defaultPostProcessingModel
-                    }
-                    .font(.caption)
+            ModelDropdownView(
+                title: "Post-Processing Model",
+                subtitle: "Used for transcript cleanup and Edit Mode transforms.",
+                predefinedModels: ModelConfiguration.llmModels,
+                defaultModel: AppState.defaultPostProcessingModel,
+                textDraft: $postProcessingModelDraft,
+                onCommit: commitPostProcessingModel,
+                onReset: {
+                    postProcessingModelDraft = AppState.defaultPostProcessingModel
+                    appState.postProcessingModel = AppState.defaultPostProcessingModel
                 }
-                Text("Used for transcript cleanup and Edit Mode transforms.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            )
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Post-Processing Fallback Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultPostProcessingFallbackModel, text: $postProcessingFallbackModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingPostProcessingFallbackModel)
-                        .onSubmit {
-                            commitPostProcessingFallbackModel()
-                        }
-                        .onChange(of: isEditingPostProcessingFallbackModel) { isEditing in
-                            if !isEditing {
-                                commitPostProcessingFallbackModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        postProcessingFallbackModelDraft = AppState.defaultPostProcessingFallbackModel
-                        appState.postProcessingFallbackModel = AppState.defaultPostProcessingFallbackModel
-                    }
-                    .font(.caption)
+            ModelDropdownView(
+                title: "Post-Processing Fallback Model",
+                subtitle: "Used as the explicit retry model for transcript cleanup and Edit Mode transforms.",
+                predefinedModels: ModelConfiguration.llmModels,
+                defaultModel: AppState.defaultPostProcessingFallbackModel,
+                textDraft: $postProcessingFallbackModelDraft,
+                onCommit: commitPostProcessingFallbackModel,
+                onReset: {
+                    postProcessingFallbackModelDraft = AppState.defaultPostProcessingFallbackModel
+                    appState.postProcessingFallbackModel = AppState.defaultPostProcessingFallbackModel
                 }
-                Text("Used as the explicit retry model for transcript cleanup and Edit Mode transforms.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            )
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Context Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultContextModel, text: $contextModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingContextModel)
-                        .onSubmit {
-                            commitContextModel()
-                        }
-                        .onChange(of: isEditingContextModel) { isEditing in
-                            if !isEditing {
-                                commitContextModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        contextModelDraft = AppState.defaultContextModel
-                        appState.contextModel = AppState.defaultContextModel
-                    }
-                    .font(.caption)
+            ModelDropdownView(
+                title: "Context Model",
+                subtitle: "Used for context inference, with a text-only retry when screenshot analysis fails.",
+                predefinedModels: ModelConfiguration.llmModels,
+                defaultModel: AppState.defaultContextModel,
+                textDraft: $contextModelDraft,
+                onCommit: commitContextModel,
+                onReset: {
+                    contextModelDraft = AppState.defaultContextModel
+                    appState.contextModel = AppState.defaultContextModel
                 }
-                Text("Used for context inference, with a text-only retry when screenshot analysis fails.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            )
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Transcription Model")
-                    .font(.caption.weight(.semibold))
-                HStack(spacing: 8) {
-                    TextField(AppState.defaultTranscriptionModel, text: $transcriptionModelDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isEditingTranscriptionModel)
-                        .onSubmit {
-                            commitTranscriptionModel()
-                        }
-                        .onChange(of: isEditingTranscriptionModel) { isEditing in
-                            if !isEditing {
-                                commitTranscriptionModel()
-                            }
-                        }
-                    Button("Reset to Default") {
-                        transcriptionModelDraft = AppState.defaultTranscriptionModel
-                        appState.transcriptionModel = AppState.defaultTranscriptionModel
-                    }
-                    .font(.caption)
+            ModelDropdownView(
+                title: "Transcription Model",
+                subtitle: "Used for speech-to-text transcription.",
+                predefinedModels: ModelConfiguration.transcriptionModels,
+                defaultModel: AppState.defaultTranscriptionModel,
+                textDraft: $transcriptionModelDraft,
+                onCommit: commitTranscriptionModel,
+                onReset: {
+                    transcriptionModelDraft = AppState.defaultTranscriptionModel
+                    appState.transcriptionModel = AppState.defaultTranscriptionModel
                 }
-                Text("Used for speech-to-text transcription.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            )
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Transcription Language")
@@ -516,7 +464,9 @@ struct GeneralSettingsView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
     @AppStorage("show_menu_bar_icon") private var showMenuBarIcon = true
+    @AppStorage("overlay_display_id") private var overlayDisplayID = 0
     @AppStorage("use_compact_overlay") private var useCompactOverlay = true
+    @State private var screensVersion = 0
     @State private var apiKeyInput: String = ""
     @State private var apiBaseURLInput: String = ""
     @State private var transcriptionAPIURLInput: String = ""
@@ -1182,7 +1132,7 @@ struct GeneralSettingsView: View {
     // MARK: Recording Overlay
 
     private var overlaySection: some View {
-        VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             OverlayStyleOptionRow(
                 title: "Minimalist menu-bar overlay",
                 subtitle: "Two slim wings flank the camera notch and stay inside the menu bar. Never covers app tabs or toolbars.",
@@ -1195,6 +1145,10 @@ struct GeneralSettingsView: View {
                 isMinimalist: false,
                 selection: $useCompactOverlay
             )
+
+            Divider()
+
+            overlayDisplaySection
         }
     }
 
@@ -1210,6 +1164,45 @@ struct GeneralSettingsView: View {
             Text("\(AppName.displayName) restores the audio state it changed when dictation ends.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Picks which physical display the recording overlay drops down on.
+    /// Without this, AppKit defaults to "the screen with the active key
+    /// window" (NSScreen.main), which makes the pill follow focus across
+    /// monitors — disorienting on multi-display setups.
+    private var overlayDisplaySection: some View {
+        HStack {
+            Text("Show on")
+                .font(.system(size: 13))
+            Spacer()
+            Picker("", selection: $overlayDisplayID) {
+                Text("Active window (default)").tag(0)
+                Text("Primary display").tag(-1)
+                ForEach(connectedScreenEntries, id: \.tag) { entry in
+                    Text(entry.name).tag(entry.tag)
+                }
+            }
+            .labelsHidden()
+            .accessibilityLabel("Show on")
+            .pickerStyle(.menu)
+            .frame(maxWidth: 240)
+        }
+        // Re-query NSScreen.screens whenever the display arrangement
+        // changes so newly-attached monitors appear in the menu without
+        // reopening Settings. screensVersion is just a cache-buster.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+            screensVersion &+= 1
+        }
+    }
+
+    private var connectedScreenEntries: [(name: String, tag: Int)] {
+        _ = screensVersion
+        return NSScreen.screens.compactMap { screen in
+            guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else {
+                return nil
+            }
+            return (name: screen.localizedName, tag: Int(id))
         }
     }
 

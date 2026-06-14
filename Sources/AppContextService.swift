@@ -39,7 +39,10 @@ Return only two sentences, no labels, no markdown, no extra commentary.
     private let baseURL: String
     private let customContextPrompt: String
     private let contextModel: String
-    private let contextRequestTimeoutSeconds: TimeInterval = 20
+    private var contextRequestTimeoutSeconds: TimeInterval {
+        let override = UserDefaults.standard.double(forKey: "context_request_timeout_seconds")
+        return override > 0 ? override : 20
+    }
 
     init(
         apiKey: String,

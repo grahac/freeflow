@@ -1157,6 +1157,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     do {
                         try pipelineHistoryStore.update(updatedItem)
                         pipelineHistory = pipelineHistoryStore.loadAllHistory()
+                        let trimmedRetryTranscript = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmedRetryTranscript.isEmpty {
+                            lastTranscript = trimmedRetryTranscript
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(trimmedRetryTranscript, forType: .string)
+                        }
                     } catch {
                         errorMessage = "Failed to save retry result: \(error.localizedDescription)"
                     }
@@ -1199,12 +1205,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func startAccessibilityPolling() {
         accessibilityTimer?.invalidate()
+        accessibilityTimer = nil
         hasAccessibility = AXIsProcessTrusted()
         hasScreenRecordingPermission = hasScreenCapturePermission()
+        if hasAccessibility && hasScreenRecordingPermission {
+            return
+        }
         accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.hasAccessibility = AXIsProcessTrusted()
-                self?.hasScreenRecordingPermission = self?.hasScreenCapturePermission() ?? false
+                guard let self else { return }
+                self.hasAccessibility = AXIsProcessTrusted()
+                self.hasScreenRecordingPermission = self.hasScreenCapturePermission()
+                if self.hasAccessibility && self.hasScreenRecordingPermission {
+                    self.accessibilityTimer?.invalidate()
+                    self.accessibilityTimer = nil
+                }
             }
         }
     }
@@ -1874,7 +1889,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         startedAt: CFAbsoluteTime? = nil
     ) -> Bool {
         activeRecordingTriggerMode = triggerMode
-        guard hasAccessibility else {
+        let isAccessibilityTrusted = AXIsProcessTrusted()
+        hasAccessibility = isAccessibilityTrusted
+        guard isAccessibilityTrusted else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
             activeRecordingTriggerMode = nil
@@ -2488,6 +2505,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         pressEnterCommandEnabled: self.isPressEnterVoiceCommandEnabled
                     )
                     try Task.checkCancellation()
+                    // Capture the parsed raw transcript as lastTranscript before
+                    // post-processing runs. If anything after this throws or focus
+                    // shifts mid-paste, the Paste Again shortcut still has the raw
+                    // text instead of the previous dictation's stale value.
+                    let bootstrapTranscript = parsedTranscript.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !bootstrapTranscript.isEmpty {
+                        await MainActor.run { [weak self] in
+                            self?.lastTranscript = bootstrapTranscript
+                        }
+                    }
                     let appContext: AppContext
                     if let sessionContext {
                         appContext = sessionContext
